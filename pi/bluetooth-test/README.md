@@ -105,26 +105,66 @@ Any change here — even partial — confirms the BT-gating theory and tells us
 the gate is "is *some* paired BT device present," not "does this exact USB
 device also match via a deeper HFP-level check."
 
-## Phase B — if Phase A shows no change: add Hands-Free Profile
+## Phase A result (confirmed negative)
 
-Plain BlueZ pairing doesn't include Hands-Free Profile (HFP), which is what
-most head units actually use to recognize a paired device as "a phone" (as
-opposed to a generic Bluetooth peripheral) — audio/call handling is normally
-the gate for the car's phone-pairing wizard to fully accept a device. If the
-head unit's `UIMirrorLink_BTManager` checks for HFP capability (via SDP)
-before it will correlate a paired device with an incoming USB/AOA session,
-Phase A's pairing might complete but still not be treated as a "phone" by
-that manager.
+Plain pairing (bond only) and a stable A2DP connection (icon showing, no
+more connect/disconnect flapping) both produced **zero change** in AOA
+activity — still just `BIND`/`ENABLE` on the USB side, no `[setup]` line,
+regardless of Bluetooth state. Also tried manually selecting the head unit's
+"HondaLink" (this unit's MirrorLink UI) source with the Pi already on USB —
+no change either. This rules out plain pairing/A2DP as the gate; if
+Bluetooth is involved at all, it's specifically HFP-level phone recognition,
+not just "some paired BT device is present."
 
-This would require:
-- Registering an HFP Audio-Gateway SDP record on the Pi (BlueZ supports this
-  via its D-Bus profile API — no need for a full working audio path, just
-  enough for the head unit's capability query to see HFP-AG advertised).
-- Possibly a minimal AT-command responder over the RFCOMM channel the head
-  unit opens after pairing, if the head unit actually probes past SDP into a
-  live AT handshake before trusting the pairing.
+## Phase B — Hands-Free Profile Audio Gateway (current)
 
-Not implemented yet — only worth building if Phase A comes back negative,
-since it's a meaningfully larger effort (likely `ofono` + a custom modem
-backend, or a hand-rolled RFCOMM/AT responder). Come back to this file and
-update it with what Phase A showed before starting Phase B.
+BlueZ's `bluetoothd` only ships the **HF** (car/headset) role internally —
+there is no built-in **AG** (phone) role. That's the likely reason A2DP
+alone got a stable connection but never made the Pi look like "a phone" to
+whatever `UIMirrorLink_BTManager` (per `strings_out.txt`) checks.
+
+`hfp_ag.py` implements a minimal HFP Audio Gateway: it registers a custom
+BlueZ D-Bus profile for the Handsfree Audio Gateway service class
+(`0000111f-0000-1000-8000-00805f9b34fb`) and answers just enough AT commands
+(`AT+BRSF`, `AT+CIND=?`/`AT+CIND?`, `AT+CMER`, `AT+CHLD=?`, etc.) to
+complete a Service Level Connection — not a real telephony stack, just
+enough for the head unit's HF client to consider us a phone. It prints every
+AT command it receives, which is useful RE data on its own.
+
+1. Install dependencies (one-time):
+   ```
+   sudo apt install -y python3-dbus python3-gi bluez
+   ```
+
+2. Run it (leave running in its own shell — it does not daemonize):
+   ```
+   sudo python3 hfp_ag.py
+   ```
+   It registers the profile and waits; it does not replace/stop the normal
+   `bluetoothd` — leave that running as-is.
+
+3. In `bluetoothctl`, clear the old bond and re-pair from scratch so the
+   car re-discovers our new SDP records:
+   ```
+   remove <car-MAC>
+   scan on
+   pair <car-MAC>
+   trust <car-MAC>
+   connect <car-MAC>
+   ```
+
+4. Watch `hfp_ag.py`'s console for the AT command exchange (`<-`/`->`
+   lines) — this confirms the car actually opened an HFP session with us,
+   and shows exactly what it asks for. Watch the car's screen for a phone
+   icon and whether it now treats the Pi as a recognized phone (e.g. shows
+   it in a "connected phone" status, not just "paired device").
+
+5. With HFP connected, repeat the USB/AOA test (`pi/aoa-gadget/README.md`,
+   fresh teardown/restart) and watch for `[setup]` activity that wasn't
+   there before.
+
+If this *still* produces no change on the USB side, that's a strong signal
+the BT-gating theory is wrong entirely (not just "wrong profile"), and the
+next step should go back to Ghidra RE of the already-extracted
+`vncdiscoverer-usb.dll` to find out what actually triggers its `GetProtocol`
+probe, rather than continuing to guess from the Bluetooth side.
