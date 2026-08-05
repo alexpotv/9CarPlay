@@ -38,6 +38,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -314,7 +315,7 @@ static void handle_setup(int ep0, const struct usb_ctrlrequest *req) {
     }
 }
 
-static void ep0_event_loop(int ep0, int *start_seen) {
+static void ep0_event_loop(int ep0) {
     struct usb_functionfs_event events[4];
     ssize_t n = read(ep0, events, sizeof(events));
     if (n < 0) {
@@ -333,37 +334,27 @@ static void ep0_event_loop(int ep0, int *start_seen) {
         }
         if (ev->type == FUNCTIONFS_SETUP) {
             handle_setup(ep0, &ev->u.setup);
-            if (ev->u.setup.bRequest == AOA_START &&
-                ((ev->u.setup.bRequestType >> 5) & 0x3) == 2) {
-                *start_seen = 1;
-            }
         } else if (ev->type == FUNCTIONFS_ENABLE) {
             printf("[event] gadget ENABLEd by host — enumeration complete\n");
         }
     }
 }
 
-/* Bulk RX loop: dump everything the head unit sends after AOA_START. This is
- * expected to be the start of an RFB handshake (ProtocolVersion message,
- * "RFB 003.008\n" or similar) if the bearer gets that far. */
-static void bulk_capture_loop(int ep_out) {
-    uint8_t buf[16384];
-    printf("\n=== entering bulk capture loop on OUT endpoint — Ctrl-C to stop ===\n\n");
-    for (;;) {
-        ssize_t n = read(ep_out, buf, sizeof(buf));
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            perror("read(ep_out)");
-            break;
-        }
-        if (n == 0) continue;
-        time_t now = time(NULL);
-        printf("[%ld] received %zd bytes from head unit:\n", (long)now, n);
-        hexdump(buf, (size_t)n);
-        if (capture_fp) {
-            fwrite(buf, 1, (size_t)n, capture_fp);
-            fflush(capture_fp);
-        }
+/* Dump whatever bytes show up on the bulk OUT endpoint. Previously this only
+ * ran after seeing AOA_START on ep0 — but if the head unit treats a device
+ * already presenting at the AOA accessory VID/PID (0x18d1/0x2d00, see
+ * "Known simplifications" in README.md) as already-switched, it may skip
+ * GetProtocol/SendString/Start entirely and write straight to the bulk
+ * endpoint. This is now read concurrently with ep0 via poll() in main(), not
+ * gated on any control-transfer state, so that case is observable too. */
+static void handle_bulk_data(const uint8_t *buf, ssize_t n) {
+    time_t now = time(NULL);
+    printf("[%ld] received %zd bytes from head unit on bulk OUT (no AOA_START required to see this):\n",
+           (long)now, n);
+    hexdump(buf, (size_t)n);
+    if (capture_fp) {
+        fwrite(buf, 1, (size_t)n, capture_fp);
+        fflush(capture_fp);
     }
 }
 
@@ -402,13 +393,39 @@ int main(int argc, char **argv) {
     capture_fp = fopen("aoa_capture.bin", "ab");
     if (!capture_fp) perror("fopen aoa_capture.bin (continuing without file capture)");
 
-    printf("Waiting for host (head unit) events on ep0...\n");
-    int start_seen = 0;
-    while (!start_seen) {
-        ep0_event_loop(ep0, &start_seen);
-    }
+    printf("Watching ep0 (control/AOA events) and ep1 (bulk OUT) concurrently —\n"
+           "bulk data no longer requires AOA_START to be observed. Ctrl-C to stop.\n");
 
-    bulk_capture_loop(ep_out);
+    struct pollfd fds[2];
+    fds[0].fd = ep0;
+    fds[0].events = POLLIN;
+    fds[1].fd = ep_out;
+    fds[1].events = POLLIN;
+
+    uint8_t bulk_buf[16384];
+    for (;;) {
+        int ready = poll(fds, 2, -1);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            perror("poll");
+            break;
+        }
+        if (fds[0].revents & POLLIN) {
+            ep0_event_loop(ep0);
+        }
+        if (fds[1].revents & POLLIN) {
+            ssize_t n = read(ep_out, bulk_buf, sizeof(bulk_buf));
+            if (n > 0) {
+                handle_bulk_data(bulk_buf, n);
+            } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+                perror("read(ep_out)");
+            }
+        }
+        if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            fprintf(stderr, "ep0 closed/error, exiting\n");
+            break;
+        }
+    }
 
     if (capture_fp) fclose(capture_fp);
     close(ep0);
