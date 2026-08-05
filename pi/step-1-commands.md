@@ -92,13 +92,57 @@ Look for `AOA Bridge (dev)` as a `registered, matched, active` device — this
 confirms the host's USB stack accepted our descriptors as valid, not just
 that dwc2 completed low-level enumeration.
 
-## Next step (not yet done)
+## Next step: testing against the head unit instead of a generic host
 
 A generic Mac/PC host won't exercise the actual AOA protocol (`GetProtocol`/
-`SendString`) — only an AOA-aware host does that. The next real test is
-repeating steps 1–4 with the Pi's peripheral port connected to the **head
-unit** instead, this time capturing traffic in parallel as ground truth:
+`SendString`) — only an AOA-aware host does that. The real test is repeating
+steps 1–4 with the Pi's peripheral port connected to the **head unit**
+instead.
+
+**Correction:** an earlier version of this doc suggested capturing with
+`usbmon` here (`sudo cat /sys/kernel/debug/usb/usbmon/<bus>u > capture.mon`).
+That doesn't apply to this link — `usbmon` only captures traffic on buses
+where **the Pi itself is acting as USB host**. On this connection the head
+unit is the host and the Pi is the peripheral, so there is no bus on the Pi
+side carrying this traffic; no `<bus>u` file corresponds to it no matter
+which number you pick.
+
+The actual ground truth for this link is `aoa_gadget`'s own logging, which
+already sees everything addressed to us:
+- Every control request on `ep0` prints a `[setup] bRequestType=... bRequest=...`
+  line (`handle_setup()`), recognized or not — if `GetProtocol`/`SendString`/
+  `Start` never appear here, the head unit genuinely never sent them.
+- Every read on the bulk OUT endpoint (`ep1`) is hex-dumped to the console and
+  appended to `aoa_capture.bin`, independent of whether any AOA control
+  request happened first (this used to be gated behind seeing `AOA_START`,
+  which hid the case where the head unit skips discovery and just starts
+  writing bulk data — since our gadget already presents at the AOA accessory
+  VID/PID `0x18d1`/`0x2d00` from first enumeration instead of the two-stage
+  switch a real phone does; see `pi/aoa-gadget/README.md` "Known
+  simplifications"). Fixed by polling `ep0` and non-blockingly reading `ep1`
+  concurrently in the main loop.
+
+If you have access to the head unit's diagnostics menu, watch it alongside
+`aoa_gadget`'s console — it shows the head unit's own interpretation of
+connection state, which is the most direct signal for "how far did this get."
+
+## Doing a clean restart between test attempts
+
+`setup_gadget.sh` is **not** safe to re-run on top of an already-bound
+gadget — it will fail (e.g. `ln: failed to create symbolic link
+'configs/c.1/ffs.aoa0': File exists`) because configfs won't let you modify
+a gadget's structure while it's bound to a UDC. Tear down fully before
+retrying:
 ```
-sudo modprobe usbmon
-sudo cat /sys/kernel/debug/usb/usbmon/<bus>u > capture.mon &
+sudo pkill -f aoa_gadget || true
+echo "" | sudo tee /sys/kernel/config/usb_gadget/aoa0/UDC
+sudo umount /dev/ffs-aoa0
+sudo rm -f /sys/kernel/config/usb_gadget/aoa0/configs/c.1/ffs.aoa0
+sudo rmdir /sys/kernel/config/usb_gadget/aoa0/functions/ffs.aoa0
+sudo rmdir /sys/kernel/config/usb_gadget/aoa0/configs/c.1/strings/0x409
+sudo rmdir /sys/kernel/config/usb_gadget/aoa0/configs/c.1
+sudo rmdir /sys/kernel/config/usb_gadget/aoa0/strings/0x409
+sudo rmdir /sys/kernel/config/usb_gadget/aoa0
 ```
+Confirm clean (`ls /sys/kernel/config/usb_gadget/` and `mount | grep ffs`
+should both show nothing), then repeat steps 1–4 from scratch.
