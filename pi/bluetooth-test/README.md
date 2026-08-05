@@ -46,32 +46,57 @@ alone changes anything on the USB side.
    Sets Class of Device to Phone/Smartphone, names the adapter
    `9CarPlay AOA Bridge`, and makes it discoverable + pairable.
 
-2. On the head unit, go to its Bluetooth "add/pair phone" menu and scan —
-   the Pi should show up as `9CarPlay AOA Bridge`. Initiate pairing **from
-   the car**, not from the Pi (this matches how a real phone pairing flow
-   looks from the head unit's side).
-
-3. On the Pi, in a second shell, run `bluetoothctl` to watch for and confirm
-   the pairing request:
+2. **Correction from initial testing:** the car-initiated scan never found
+   the Pi (BlueZ's discoverable window times out at 180s regardless of
+   `btmgmt`/`bluetoothctl` settings, and this head unit's "add device" flow
+   may simply expect to be found by the phone rather than finding the phone
+   itself). Pairing works the other direction instead — initiate **from the
+   Pi**:
    ```
    bluetoothctl
+   power on
    agent on
    default-agent
+   scan on
    ```
-   Leave this running. When the head unit prompts for a passkey/confirmation
-   on its screen, `bluetoothctl` will print the same passkey here (or a
-   `[agent] Confirm passkey ... (yes/no)` prompt) — confirm on both sides.
+   Put the head unit in its own discoverable/pairing-wait state on its
+   screen, then watch for it to appear in the scan output (by name or MAC).
+   ```
+   scan off
+   pair <car-MAC>
+   trust <car-MAC>
+   connect <car-MAC>
+   ```
 
-4. Once paired, check `bluetoothctl` reports `Paired: yes` and ideally
+3. **Known issue at this point:** plain pairing bonds successfully, but
+   `connect` cycles `Connected: yes`/`no` repeatedly, sometimes surfacing
+   `org.bluez.Error.Failed br-connection-profile-unavailable`, and the Pi
+   shows in the car's paired-device list with no phone/music icon. This is
+   because the head unit is trying to open a profile session (A2DP and/or
+   HFP) that a stock BlueZ install doesn't offer — see step 4.
+
+4. Run `setup_bt_a2dp.sh` (adds A2DP sink support and makes the Class-of-
+   Device setting persistent — `btmgmt class` alone doesn't survive
+   `bluetoothd` restarts, which is the other reason the icon never showed
+   up):
+   ```
+   sudo ./setup_bt_a2dp.sh
+   pulseaudio --start   # as your normal user, not root
+   ```
+   Then re-pair from scratch (`remove <car-MAC>` first in `bluetoothctl` to
+   clear the old flapping bond), and confirm a stable `Connected: yes` and a
+   music-note icon on the car's device list before moving on.
+
+5. Once paired, check `bluetoothctl` reports `Paired: yes` and ideally
    `Connected: yes` for the head unit's device entry (`devices` /
    `info <MAC>`). **Keep this Bluetooth session up** — don't disconnect.
 
-5. With BT still connected, start the USB/AOA side exactly as before (see
+6. With BT still connected, start the USB/AOA side exactly as before (see
    `pi/aoa-gadget/README.md` — either `aoa_gadget` or
    `aoa_gadget_twostage`, freshly torn down and restarted) and connect the
    Pi's peripheral USB port to the head unit.
 
-6. Watch the daemon's console. The key question: does a `[setup]` line
+7. Watch the daemon's console. The key question: does a `[setup]` line
    (any `GetProtocol`/`SendString`) appear now, where it never did before?
    Also recheck the head unit's MirrorLink diagnostics menu for any state
    change versus BT-unpaired.
