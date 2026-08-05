@@ -110,6 +110,11 @@ def handle_at_command(line, sock):
 
 def rfcomm_session(fd):
     sock = socket.fromfd(fd, socket.AF_BLUETOOTH, socket.SOCK_STREAM)
+    # The fd BlueZ hands us via NewConnection is non-blocking; fromfd()
+    # doesn't clear that, so a blocking-style recv() below would otherwise
+    # raise EAGAIN immediately instead of waiting for the head unit's first
+    # AT command.
+    sock.setblocking(True)
     print("[hfp-ag] RFCOMM session started")
     buf = b""
     try:
