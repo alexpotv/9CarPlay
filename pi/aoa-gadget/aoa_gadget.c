@@ -378,7 +378,7 @@ int main(int argc, char **argv) {
     printf("wrote %zd bytes of strings to ep0\n", w);
 
     snprintf(path, sizeof(path), "%s/ep1", argv[1]);
-    int ep_out = open(path, O_RDONLY);
+    int ep_out = open(path, O_RDONLY | O_NONBLOCK);
     if (ep_out < 0) { perror("open ep1 (bulk OUT)"); return 1; }
 
     snprintf(path, sizeof(path), "%s/ep2", argv[1]);
@@ -396,31 +396,38 @@ int main(int argc, char **argv) {
     printf("Watching ep0 (control/AOA events) and ep1 (bulk OUT) concurrently —\n"
            "bulk data no longer requires AOA_START to be observed. Ctrl-C to stop.\n");
 
-    struct pollfd fds[2];
+    /* Only poll ep0 — FunctionFS implements a real .poll callback for it, so
+     * POLLIN reliably means an event is waiting. The bulk endpoint files
+     * (ep1/ep2) do NOT implement .poll in most kernels; a fd with no .poll
+     * handler is reported by the kernel as always-ready by default, which
+     * previously caused read(ep_out) — a blocking-mode fd — to block forever
+     * on a false-positive readiness signal, hiding even the local ep0 BIND
+     * event. ep_out is opened O_NONBLOCK above instead, and we just attempt
+     * a non-blocking read of it every loop iteration regardless of what
+     * poll() (which isn't even asked about it now) would have said. */
+    struct pollfd fds[1];
     fds[0].fd = ep0;
     fds[0].events = POLLIN;
-    fds[1].fd = ep_out;
-    fds[1].events = POLLIN;
 
     uint8_t bulk_buf[16384];
     for (;;) {
-        int ready = poll(fds, 2, -1);
+        int ready = poll(fds, 1, 500 /* ms — periodic, so the ep_out check below still runs */);
         if (ready < 0) {
             if (errno == EINTR) continue;
             perror("poll");
             break;
         }
-        if (fds[0].revents & POLLIN) {
+        if (ready > 0 && (fds[0].revents & POLLIN)) {
             ep0_event_loop(ep0);
         }
-        if (fds[1].revents & POLLIN) {
-            ssize_t n = read(ep_out, bulk_buf, sizeof(bulk_buf));
-            if (n > 0) {
-                handle_bulk_data(bulk_buf, n);
-            } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
-                perror("read(ep_out)");
-            }
+
+        ssize_t n = read(ep_out, bulk_buf, sizeof(bulk_buf));
+        if (n > 0) {
+            handle_bulk_data(bulk_buf, n);
+        } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            perror("read(ep_out)");
         }
+
         if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
             fprintf(stderr, "ep0 closed/error, exiting\n");
             break;
