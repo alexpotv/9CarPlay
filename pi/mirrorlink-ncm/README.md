@@ -200,6 +200,16 @@ answer correctly) — but in a ~20s trial it didn't go further, and the diagnost
 `Assigned IP address`. `ssdp_announce.py` now also serves `<URLBase>` in the description (a real,
 confirmed-via-firmware-string element we were previously missing), which may or may not matter.
 
+A follow-up trial with Bluetooth paired at the same time produced the identical two diagnostics
+events and, notably, **no `GET /description.xml` at all this time** — because `DEVICE_UUID` was
+previously fixed across runs, the head unit may have simply recognized us as an already-known
+device from the earlier trial and skipped re-fetching, which would make that absence a caching
+artifact rather than a new negative result for the Bluetooth-correlation theory. `DEVICE_UUID` is
+now randomized by default on every run specifically to rule this out — each trial now presents as
+a genuinely new device, so a fresh `GET /description.xml` should occur every time regardless of
+what happened in a previous trial (pass `--fixed-uuid` to opt back into the old deterministic
+behavior if that's ever useful).
+
 For the next trial:
 
 1. **Let it run longer — don't `Ctrl+C` early.** 20s may just not have been enough time; a real

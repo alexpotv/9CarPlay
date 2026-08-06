@@ -73,7 +73,11 @@ SERVICE_ACTIONS = {
     ],
 }
 
-DEVICE_UUID = str(uuid.uuid5(uuid.NAMESPACE_DNS, "9carplay-mirrorlink-ncm-bridge"))
+# Randomized per process run (not a fixed uuid5) so every trial presents as a genuinely new
+# device — a control point that caches by UDN/USN might otherwise skip re-fetching a description
+# it already saw in an earlier trial, which would look identical to "stuck" from our side. Pass
+# --fixed-uuid to opt back into the deterministic UUID if that behavior is ever wanted instead.
+DEVICE_UUID = str(uuid.uuid4())
 
 DESCRIPTION_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
@@ -355,12 +359,22 @@ def msearch_responder(ip, port, iface):
 
 
 def main():
+    global DEVICE_UUID
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--ip", default="192.168.42.1", help="IP address to advertise (must match setup_ncm_gadget.sh)")
     ap.add_argument("--port", type=int, default=8080, help="HTTP port for the device description")
     ap.add_argument("--interval", type=int, default=30, help="seconds between NOTIFY ssdp:alive bursts")
     ap.add_argument("--iface", default="usb0", help="NCM network interface name (for SO_BINDTODEVICE filtering)")
+    ap.add_argument("--fixed-uuid", action="store_true",
+                     help="use a fixed UUID across runs instead of a fresh random one each time "
+                          "(the default is randomized so a control point that caches by UDN/USN "
+                          "can't skip re-fetching our description on a later trial)")
     args = ap.parse_args()
+
+    if args.fixed_uuid:
+        DEVICE_UUID = str(uuid.uuid5(uuid.NAMESPACE_DNS, "9carplay-mirrorlink-ncm-bridge"))
+    print(f"[ssdp] device UUID for this run: {DEVICE_UUID}")
 
     start_http_server(args.ip, args.port)
 
