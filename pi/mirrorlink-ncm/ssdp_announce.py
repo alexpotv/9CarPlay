@@ -297,7 +297,10 @@ class DescriptionHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/description.xml":
             ip, port = self.server.server_address
-            self._send_xml(build_description_xml(ip, port))
+            body = build_description_xml(ip, port)
+            print(f"[http] description.xml fetched by {self.address_string()} — replying with:\n"
+                  f"{body.decode('utf-8')}")
+            self._send_xml(body)
             return
         if self.path.startswith("/scpd_") and self.path.endswith(".xml"):
             service_id = self.path[len("/scpd_"):-len(".xml")]
@@ -485,7 +488,7 @@ def msearch_responder(ip, port, iface):
                 "\r\n"
             ).encode("ascii")
             sock.sendto(reply, addr)
-            print(f"[ssdp] -> M-SEARCH reply ST={st_match} to {addr}")
+            print(f"[ssdp] -> M-SEARCH reply to {addr}:\n{reply.decode('ascii')}")
 
 
 def main():
