@@ -116,13 +116,47 @@ DESCRIPTION_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
       <majorVersion>1</majorVersion>
       <minorVersion>1</minorVersion>
     </X_mirrorLinkVersion>
+{x_signature}
+    <X_presentations xmlns="urn:schemas-carconnectivity-org:ml-1-2">
+      <presentation>vncu</presentation>
+    </X_presentations>
+    <X_mlUiMode xmlns="urn:schemas-carconnectivity-org:ml-1-3">
+      <mode>classic</mode>
+    </X_mlUiMode>
   </device>
 </root>
 """
 
+# ETSI TS 103 544-12 Annex A's normative XSD marks X_Signature minOccurs="1" — it is not
+# optional, and clause 4.3.2 requires the MirrorLink Client to validate it and terminate the
+# session on failure. We have no real signature to offer: the key is the private half of an
+# application-specific key whose public half must be bound via genuine DAP/CCC attestation (see
+# Phase 3 in PROJECT_PLAN.md) — credentials we don't have. This is a syntactically well-formed
+# but cryptographically meaningless placeholder (DigestValue/SignatureValue are not computed over
+# the actual document), included only so the description XML is schema-valid enough to test how
+# far the head unit gets before it — presumably — rejects the bogus signature. That rejection
+# point is itself useful diagnostic signal for Phase 3.
+X_SIGNATURE_XML = """    <X_Signature xmlns="urn:schemas-carconnectivity-org:ml-1-1">
+      <Signature Id="deviceSignature" xmlns="http://www.w3.org/2000/09/xmldsig#">
+        <SignedInfo>
+          <CanonicalizationMethod Algorithm="http://www.w3.org/2006/12/xml-c14n11"/>
+          <SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/>
+          <Reference URI="">
+            <Transforms>
+              <Transform Algorithm="http://www.w3.org/2006/12/xml-c14n11"/>
+              <Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+            </Transforms>
+            <DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>
+            <DigestValue>bm90LWEtcmVhbC1zaWduYXR1cmU=</DigestValue>
+          </Reference>
+        </SignedInfo>
+        <SignatureValue>bm90LWEtcmVhbC1zaWduYXR1cmU=</SignatureValue>
+      </Signature>
+    </X_Signature>"""
+
 SERVICE_XML_TEMPLATE = """      <service>
         <serviceType>{service_type}</serviceType>
-        <serviceId>urn:upnp-org:serviceId:{service_id}</serviceId>
+        <serviceId>urn:upnp-org:serviceId:{service_id_urn}</serviceId>
         <SCPDURL>/scpd_{service_id}.xml</SCPDURL>
         <controlURL>/control_{service_id}</controlURL>
         <eventSubURL>{event_sub_path}</eventSubURL>
@@ -201,13 +235,24 @@ ACTION_RESPONSE_BODIES = {
 
 def build_description_xml(ip, port):
     services = "\n".join(
+        # serviceId keeps the version digit concatenated (e.g. "TmApplicationServer1"), matching
+        # the literal string in the spec's worked example in clause 5 — service_id (used for our
+        # own SCPDURL/controlURL path naming, which the spec leaves implementation-defined) stays
+        # short since it's also the SERVICE_ACTIONS/service_type_for_id lookup key.
         SERVICE_XML_TEMPLATE.format(
-            service_type=st, service_id=st.split(":")[-2], event_sub_path=EVENT_SUB_PATH
+            service_type=st,
+            service_id=st.split(":")[-2],
+            service_id_urn=st.split(":")[-2] + st.split(":")[-1],
+            event_sub_path=EVENT_SUB_PATH,
         )
         for st in SERVICE_TYPES
     )
     return DESCRIPTION_XML_TEMPLATE.format(
-        url_base=f"http://{ip}:{port}/", device_type=DEVICE_TYPE, udn=DEVICE_UUID, services=services
+        url_base=f"http://{ip}:{port}/",
+        device_type=DEVICE_TYPE,
+        udn=DEVICE_UUID,
+        services=services,
+        x_signature=X_SIGNATURE_XML,
     ).encode("utf-8")
 
 
