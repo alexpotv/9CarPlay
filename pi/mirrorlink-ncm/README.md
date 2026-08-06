@@ -215,13 +215,16 @@ see `references/cr-v/PROTOCOL_ANALYSIS.md` for the full trace.
   `<attributeList>`/`<attribute>` wrapper) were wrong; that shape actually belongs to a different,
   Deprecated feature (`X_deviceKeys`/`key`) that happens to share the same parsing function in the
   decompiled binary, which is what caused the confusion.
-- **The MirrorLink USB command (see above) — implemented, untested on hardware.**
-  `mirrorlink_usb_cmd_listener.py` is new and has not yet been validated against a real head unit.
-  Watch its console output during the next trial for a `*** MirrorLink USB command received ***`
-  line — if it never appears, either the head unit doesn't send this request over this bearer in
-  practice (possible — not every implementation follows every clause), or something about the
-  hybrid `ncm.usb0` + `ffs.mlctrl` composite isn't routing the request to us correctly (e.g. the
-  `FUNCTIONFS_ALL_CTRL_RECIP` flag not having the intended effect in practice) and needs debugging.
+- **The MirrorLink USB command — implemented, first hardware trial was inconclusive.** The
+  listener only logged `BIND`/`ENABLE`, never a `SETUP` event for this command — the same
+  "BIND/ENABLE only" pattern seen with the original AOA gadget. That's ambiguous on its own: it
+  could mean the head unit genuinely never sends this request over this bearer, or it could mean
+  our `ncm.usb0` + `ffs.mlctrl` composite has a plumbing issue that prevents *any* vendor control
+  request from reaching userspace, independent of what any host sends. `test_send_mirrorlink_usb_command.py`
+  was added to isolate this — it sends the exact same control transfer to the Pi's gadget from a
+  regular computer (not the car), so a positive result there proves our gadget-side handling is
+  correct regardless of the head unit's behavior. See that script's docstring for the procedure
+  (swap the head unit for a PC/Mac temporarily, `pip install pyusb`). Not yet run.
 - **X_Signature** (an RSA-SHA1 XML signature over the device description, tied to attestation) is
   listed as Mandatory in the spec's attribute table, but annotated as introduced in later
   MirrorLink versions (1.2/1.3) alongside `X_presentations`/`X_localization`/`X_mlUiMode`. Since
