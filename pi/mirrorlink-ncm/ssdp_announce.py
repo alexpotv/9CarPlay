@@ -336,6 +336,11 @@ def service_type_for_id(service_id):
 
 class DescriptionHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # Backstop for the ThreadingHTTPServer switch below: without this, a client that opens a
+    # keep-alive connection and never sends a second request (or never closes the socket) would
+    # tie up its handler thread in a blocking readline() forever. 30s is generous versus the
+    # ~30s SSDP re-announce interval.
+    timeout = 30
 
     def _send_xml(self, body, status=200):
         self.send_response(status)
@@ -415,7 +420,16 @@ class DescriptionHandler(http.server.BaseHTTPRequestHandler):
 
 
 def start_http_server(ip, port):
-    server = http.server.HTTPServer((ip, port), DescriptionHandler)
+    # http.server.HTTPServer is single-threaded and synchronous: with protocol_version
+    # "HTTP/1.1" (keep-alive) it fully blocks inside one connection's handle_one_request() loop
+    # until that connection closes or times out, so it can't accept a second connection in the
+    # meantime. Confirmed live via tcpdump: the head unit's first GET /description.xml got a
+    # reply, but every subsequent GET (a new TCP connection each time) got no reply at all —
+    # exactly what you'd see if the server were still wedged servicing the first connection.
+    # ThreadingHTTPServer hands each connection its own thread so concurrent/repeated fetches
+    # (description.xml, per-service SCPD, control, eventSub) can all be served independently.
+    server = http.server.ThreadingHTTPServer((ip, port), DescriptionHandler)
+    server.daemon_threads = True
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     print(f"[http] serving /description.xml on http://{ip}:{port}/description.xml")
