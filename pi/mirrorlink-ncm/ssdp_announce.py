@@ -350,19 +350,27 @@ class DescriptionHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        # Build + send the response BEFORE logging it. Printing a multi-KB XML body to the
+        # console is not free (slow SSH/serial console, redirected-to-disk stdout, etc.), and
+        # doing that ahead of _send_xml() puts avoidable latency directly on the critical path
+        # of "first response byte out". Confirmed live: the head unit's second description.xml
+        # request got a BrokenPipeError when we finally tried to write — i.e. it had ALREADY
+        # closed the connection by then, consistent with a client-side receive timeout tripping
+        # while we were still busy printing instead of replying. Logging after send removes that
+        # self-inflicted delay; it doesn't change what's logged, only when.
         if self.path == "/description.xml":
             ip, port = self.server.server_address
             body = build_description_xml(ip, port)
-            print(f"[http] description.xml fetched by {self.address_string()} — replying with:\n"
-                  f"{body.decode('utf-8')}")
             self._send_xml(body)
+            print(f"[http] description.xml fetched by {self.address_string()} — replied with:\n"
+                  f"{body.decode('utf-8')}")
             return
         if self.path.startswith("/scpd_") and self.path.endswith(".xml"):
             service_id = self.path[len("/scpd_"):-len(".xml")]
             if service_id in SERVICE_ACTIONS:
+                self._send_xml(build_scpd_xml(service_id))
                 print(f"[http] SCPD fetched for service {service_id!r} — "
                       f"head unit is reading our action list")
-                self._send_xml(build_scpd_xml(service_id))
                 return
         self.send_response(404)
         self.end_headers()
@@ -371,7 +379,6 @@ class DescriptionHandler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length) if length else b""
         soapaction = self.headers.get("SOAPACTION", "")
-        print(f"[http] POST {self.path} SOAPACTION={soapaction!r}\n{body.decode('utf-8', 'replace')}")
 
         if self.path.startswith("/control_"):
             service_id = self.path[len("/control_"):]
@@ -381,16 +388,19 @@ class DescriptionHandler(http.server.BaseHTTPRequestHandler):
                 action = soapaction.rsplit("#", 1)[-1].strip('"')
             if service_type and action:
                 resp_body = ACTION_RESPONSE_BODIES.get(action, "")
-                print(f"[http] head unit invoked action {action!r} on {service_id} — "
-                      f"replying with {'a best-effort' if resp_body else 'an empty'} response")
                 resp = SOAP_RESPONSE_TEMPLATE.format(
                     action=action, service_type=service_type, body=resp_body
                 ).encode("utf-8")
                 self._send_xml(resp)
+                print(f"[http] head unit invoked action {action!r} on {service_id} — "
+                      f"replied with {'a best-effort' if resp_body else 'an empty'} response\n"
+                      f"POST {self.path} SOAPACTION={soapaction!r}\n{body.decode('utf-8', 'replace')}")
                 return
 
         self.send_response(404)
         self.end_headers()
+        print(f"[http] POST {self.path} SOAPACTION={soapaction!r} -> 404\n"
+              f"{body.decode('utf-8', 'replace')}")
 
     def do_SUBSCRIBE(self):
         if self.path == EVENT_SUB_PATH:
@@ -419,6 +429,22 @@ class DescriptionHandler(http.server.BaseHTTPRequestHandler):
         print(f"[http] {self.address_string()} - {fmt % args}")
 
 
+class MirrorLinkHTTPServer(http.server.ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        # Default socketserver.BaseServer.handle_error() dumps a full traceback for ANY
+        # exception escaping a handler thread. A client (this head unit, live) closing its
+        # socket mid-response — write() then fails with BrokenPipeError/ConnectionResetError —
+        # is expected/benign under ThreadingHTTPServer (it only kills that one thread), not a
+        # bug, so log it as one line instead of a scary traceback. Anything else still gets the
+        # full traceback since that IS worth knowing about.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            print(f"[http] {client_address} disconnected mid-response ({exc.__class__.__name__}) "
+                  f"— client closed the connection before we finished writing, not fatal")
+            return
+        super().handle_error(request, client_address)
+
+
 def start_http_server(ip, port):
     # http.server.HTTPServer is single-threaded and synchronous: with protocol_version
     # "HTTP/1.1" (keep-alive) it fully blocks inside one connection's handle_one_request() loop
@@ -428,7 +454,7 @@ def start_http_server(ip, port):
     # exactly what you'd see if the server were still wedged servicing the first connection.
     # ThreadingHTTPServer hands each connection its own thread so concurrent/repeated fetches
     # (description.xml, per-service SCPD, control, eventSub) can all be served independently.
-    server = http.server.ThreadingHTTPServer((ip, port), DescriptionHandler)
+    server = MirrorLinkHTTPServer((ip, port), DescriptionHandler)
     server.daemon_threads = True
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
