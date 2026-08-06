@@ -78,11 +78,13 @@ DEVICE_UUID = str(uuid.uuid5(uuid.NAMESPACE_DNS, "9carplay-mirrorlink-ncm-bridge
 DESCRIPTION_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
   <specVersion><major>1</major><minor>0</minor></specVersion>
+  <URLBase>{url_base}</URLBase>
   <device>
     <deviceType>{device_type}</deviceType>
     <friendlyName>9CarPlay MirrorLink Bridge</friendlyName>
     <manufacturer>9CarPlay Project</manufacturer>
     <modelName>MirrorLink NCM Bridge (dev)</modelName>
+    <modelNumber>0.1</modelNumber>
     <UDN>uuid:{udn}</UDN>
     <serviceList>
 {services}
@@ -124,7 +126,7 @@ SOAP_RESPONSE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def build_description_xml():
+def build_description_xml(ip, port):
     services = "\n".join(
         SERVICE_XML_TEMPLATE.format(
             service_type=st, service_id=st.split(":")[-2], event_sub_path=EVENT_SUB_PATH
@@ -132,7 +134,7 @@ def build_description_xml():
         for st in SERVICE_TYPES
     )
     return DESCRIPTION_XML_TEMPLATE.format(
-        device_type=DEVICE_TYPE, udn=DEVICE_UUID, services=services
+        url_base=f"http://{ip}:{port}/", device_type=DEVICE_TYPE, udn=DEVICE_UUID, services=services
     ).encode("utf-8")
 
 
@@ -161,7 +163,8 @@ class DescriptionHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/description.xml":
-            self._send_xml(build_description_xml())
+            ip, port = self.server.server_address
+            self._send_xml(build_description_xml(ip, port))
             return
         if self.path.startswith("/scpd_") and self.path.endswith(".xml"):
             service_id = self.path[len("/scpd_"):-len(".xml")]

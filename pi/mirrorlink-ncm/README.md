@@ -194,29 +194,45 @@ below.
 
 ## Next test: does the head unit fetch SCPD / invoke a control action now?
 
-Run a normal Quickstart trial (start `ssdp_announce.py`, then `cycle_usb.sh`) and read the
-`[http]` console log, which now shows every HTTP request received, in order — this alone answers
-several open questions from one trial, no `tcpdump` required:
+**Confirmed so far**: with the corrected `DEVICE_TYPE` and a working DHCP lease, the head unit
+does `GET /description.xml` (200) once, then starts its own periodic `M-SEARCH` (which we now
+answer correctly) — but in a ~20s trial it didn't go further, and the diagnostics screen stayed at
+`Assigned IP address`. `ssdp_announce.py` now also serves `<URLBase>` in the description (a real,
+confirmed-via-firmware-string element we were previously missing), which may or may not matter.
 
-- **Nothing beyond the earlier `GET /description.xml`** (or not even that) — means the head unit
-  isn't proceeding past SSDP/description at all, and the SCPD 404 theory is wrong; the blocker is
-  upstream (addressing, the device type URN, or something at the SSDP layer itself).
-- **`GET /scpd_TmApplicationServer.xml` and/or `GET /scpd_TmClientProfile.xml` appear**, logged
-  with `"SCPD fetched for service ..."` — confirms the head unit is a real UPnP control point
-  progressing normally through discovery → description → SCPD, and was very likely stalling on
-  the previous 404s. Whether it goes on to invoke an action or subscribe next is the thing to
-  watch for immediately after.
-- **`SUBSCRIBE /eventSub` appears** — confirms GENA eventing is part of the flow; check whether it
-  proceeds to invoke a control action after the subscription is accepted.
-- **`POST /control_<service>` appears with a `SOAPACTION`** — this is the actual goal: read the
-  logged action name and full SOAP body. Whichever action comes first (most likely something on
-  `TmApplicationServer`, e.g. `GetApplicationCertificateInfo` given this is the point where a
-  cert/identity check would plausibly start) tells us exactly what real response data needs to be
-  implemented next, and the raw body reveals any arguments we don't currently know about.
+For the next trial:
 
-Whatever the result, it narrows the search meaningfully — report back the full `[http]` log from
-one trial and we'll know which of the remaining unknowns (device type URN, IP scheme, SCPD
-arguments, or something past this layer entirely) to chase next.
+1. **Let it run longer — don't `Ctrl+C` early.** 20s may just not have been enough time; a real
+   UPnP control point can have multiple internal timeouts/retries before either progressing or
+   giving up. Leave a trial running for at least 60-90s and watch both the console and the
+   diagnostics screen the whole time.
+2. **Optionally, pair Bluetooth at the same time** (`pi/bluetooth-test/`, either plain pairing or
+   the full HFP setup) before triggering the CDC-NCM/SSDP trial. New firmware evidence found a
+   `<bdAddr>` (Bluetooth address) field in what looks like session/connection data — it's possible
+   the head unit needs to correlate this UPnP session with an already Bluetooth-paired device to
+   let it proceed past initial detection, even though Bluetooth wasn't required to get *that* far.
+3. Read the `[http]` console log, which shows every HTTP request received, in order — this alone
+   answers several open questions, no `tcpdump` required:
+   - **Still nothing beyond `GET /description.xml`** — even with the `URLBase` fix and more time,
+     this would suggest the head unit is evaluating the description content and rejecting/ignoring
+     it (missing element, wrong value) rather than just not having gotten there yet. Next step
+     would be a `tcpdump -A` capture of the exact bytes on both sides of that GET to check for
+     anything we're not accounting for.
+   - **`GET /scpd_TmApplicationServer.xml` and/or `GET /scpd_TmClientProfile.xml` appear**, logged
+     with `"SCPD fetched for service ..."` — confirms it's progressing normally through
+     description → SCPD. Watch what happens right after.
+   - **`SUBSCRIBE /eventSub` appears** — confirms GENA eventing is part of the flow.
+   - **`POST /control_<service>` appears with a `SOAPACTION`** — the actual goal: read the logged
+     action name and full SOAP body. Given the firmware's `attestationRequest` template
+     (`trustRoot`/`nonce`/`componentID`) and the `GetApplicationCertificateInfo` action name, a
+     certificate/attestation exchange as the very first invoked action would not be surprising —
+     if so, that ties this layer directly into the Phase 3 pairing/certificate risk already
+     flagged in `PROJECT_PLAN.md`, and would mean genuine CCC-issued credentials are likely needed
+     here too, not only at the RFB layer.
+
+Whatever the result, it narrows the search meaningfully — report back the full `[http]` log
+(from a longer trial, with or without Bluetooth paired) and we'll know which of the remaining
+unknowns to chase next.
 
 ## Why cycling instead of physically unplugging
 
