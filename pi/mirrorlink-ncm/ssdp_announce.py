@@ -19,11 +19,11 @@ strings (ASSERVICE_* / CPSERVICE_*) — see references/cr-v/PROTOCOL_ANALYSIS.md
 writeup. This version adds real SCPD, SOAP control, and GENA subscribe endpoints based on that
 evidence, to test whether the earlier 404s on those paths were what caused the disconnect.
 
-The root DEVICE type URN was NOT found in the firmware strings dump, so DEVICE_TYPE below is
-still a best-effort guess following standard UPnP naming convention
-("urn:schemas-upnp-org:device:<Type>:<version>") and may need correcting once real traffic can be
-observed (e.g. via a capture of the head unit's own M-SEARCH request, which would include the ST
-it's actually looking for).
+The root DEVICE type URN is now CONFIRMED (previously a guess): the head unit's own
+DHCP-client-then-M-SEARCH sequence was observed live — after it obtains a lease from
+start_dhcp_server.sh, it immediately starts sending M-SEARCH for
+ST: urn:schemas-upnp-org:device:TmServerDevice:1 (NOT TerminalModeDevice:1 as previously guessed).
+DEVICE_TYPE below has been corrected to match.
 
 Usage:
     sudo python3 ssdp_announce.py [--ip 192.168.42.1] [--port 8080]
@@ -45,8 +45,8 @@ SSDP_ADDR = "239.255.255.250"
 SSDP_PORT = 1900
 EVENT_SUB_PATH = "/eventSub"  # confirmed literal string in firmware, shared across services
 
-# Best-effort guess — see module docstring. Adjust if a real capture shows otherwise.
-DEVICE_TYPE = "urn:schemas-upnp-org:device:TerminalModeDevice:1"
+# Confirmed live via the head unit's own M-SEARCH request (ST: header) — see module docstring.
+DEVICE_TYPE = "urn:schemas-upnp-org:device:TmServerDevice:1"
 SERVICE_TYPES = [
     "urn:schemas-upnp-org:service:TmApplicationServer:1",
     "urn:schemas-upnp-org:service:TmClientProfile:1",

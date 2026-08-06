@@ -129,15 +129,14 @@ unit's MirrorLink UI service is watching for on a bare USB connection.
 Full technical writeup: `references/cr-v/PROTOCOL_ANALYSIS.md`, "Update — live AOA testing was
 negative; real bearer is USB CDC-NCM + UPnP/SSDP, not AOA".
 
-**Status: confirmed reproducible partial positive result on real hardware.** Following the
-Quickstart above, the head unit's MirrorLink diagnostics screen logs a `Detected Device` event
-followed a few seconds later by `MirrorLink Status (disconnected)` — a real reaction to the
-CDC-NCM attach + SSDP announcement, and a materially better result than AOA ever produced (which
-showed no reaction at all, on any test). The connection does not yet progress past this point;
-see "Known gaps" below for what's still unresolved (the "disconnected" outcome suggests the head
-unit accepted the device and detected our announcement, but something after that — description
-XML fetch, TCP session, or a further pairing/handshake step — isn't happening or isn't correct
-yet).
+**Status: steadily progressing on real hardware, DHCP + device-type gaps resolved.** With
+`start_dhcp_server.sh` running, the head unit obtains a DHCP lease (diagnostics screen logs
+`Detected Device` then `Assigned IP address`) and then actively sends `M-SEARCH` for
+`urn:schemas-upnp-org:device:TmServerDevice:1` — confirming the previously-guessed root device
+type URN was wrong, now corrected in `ssdp_announce.py`. This is real, two-way protocol engagement
+from the head unit, well past anything AOA ever produced. Not yet tested: whether a matching
+`M-SEARCH` response now leads to an HTTP fetch of `/description.xml` and beyond — see "Next test"
+below.
 
 ## What's here
 
@@ -169,11 +168,11 @@ yet).
 
 ## Known gaps / best-effort guesses that may need correcting
 
-- **Root device type URN** (`DEVICE_TYPE` in `ssdp_announce.py`) was NOT found in the firmware
-  strings dump — only the two service types were. `urn:schemas-upnp-org:device:TerminalModeDevice:1`
-  is a plausible guess following standard UPnP naming convention, not a confirmed value. If the
-  head unit's own `M-SEARCH` can be observed (e.g. via `tcpdump -i usb0` once the link is up), its
-  `ST:` header would confirm the real value directly — do that before assuming this guess is wrong.
+- ~~Root device type URN unknown~~ **Resolved.** With the DHCP server running, the head unit
+  obtains a lease and then actively sends `M-SEARCH` with
+  `ST: urn:schemas-upnp-org:device:TmServerDevice:1` — not `TerminalModeDevice:1` as previously
+  guessed. `DEVICE_TYPE` in `ssdp_announce.py` has been corrected to the confirmed value, and our
+  `NOTIFY`/`M-SEARCH` responses should now actually match what the head unit is looking for.
 - ~~IP addressing mechanism unknown~~ **Resolved.** Confirmed live via `tcpdump`: the head unit
   sends repeated `BOOTP/DHCP Request` packets from MAC `02:00:00:00:00:02` (exactly the NCM
   `host_addr` configured in `setup_ncm_gadget.sh`) — it's a DHCP client. `start_dhcp_server.sh`
