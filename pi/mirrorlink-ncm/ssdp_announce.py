@@ -233,7 +233,57 @@ ACTION_RESPONSE_BODIES = {
 }
 
 
+# TEMPORARY test override — bypasses build_description_xml() below entirely and serves this
+# fixed, minimal description instead (no X_mirrorLinkVersion/X_Signature/X_presentations/
+# X_mlUiMode, and eventSubURL paths differ per-service rather than the shared /eventSub), to see
+# whether a leaner, more literally spec-example-shaped description changes head unit behaviour.
+# Flip USE_STATIC_TEST_DESCRIPTION_XML back to False to revert to the full build_description_xml.
+USE_STATIC_TEST_DESCRIPTION_XML = True
+
+STATIC_TEST_DESCRIPTION_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+
+  <URLBase>http://192.168.42.1:8080/</URLBase>
+
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:TmServerDevice:1</deviceType>
+    <friendlyName>9CarPlay MirrorLink Bridge</friendlyName>
+    <manufacturer>9CarPlay Project</manufacturer>
+    <modelName>MirrorLink NCM Bridge</modelName>
+    <modelNumber>0.1</modelNumber>
+    <serialNumber>0123456789abcdef</serialNumber>
+    <UDN>uuid:{udn}</UDN>
+
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:TmApplicationServer:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:TmApplicationServer1</serviceId>
+        <SCPDURL>/scpd_TmApplicationServer.xml</SCPDURL>
+        <controlURL>/control_TmApplicationServer</controlURL>
+        <eventSubURL>/event_TmApplicationServer</eventSubURL>
+      </service>
+
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:TmClientProfile:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:TmClientProfile1</serviceId>
+        <SCPDURL>/scpd_TmClientProfile.xml</SCPDURL>
+        <controlURL>/control_TmClientProfile</controlURL>
+        <eventSubURL>/event_TmClientProfile</eventSubURL>
+      </service>
+    </serviceList>
+  </device>
+</root>
+"""
+
+
 def build_description_xml(ip, port):
+    if USE_STATIC_TEST_DESCRIPTION_XML:
+        return STATIC_TEST_DESCRIPTION_XML.format(udn=DEVICE_UUID).encode("utf-8")
+
     services = "\n".join(
         # serviceId keeps the version digit concatenated (e.g. "TmApplicationServer1"), matching
         # the literal string in the spec's worked example in clause 5 — service_id (used for our
@@ -481,6 +531,7 @@ def msearch_responder(ip, port, iface):
             reply = (
                 "HTTP/1.1 200 OK\r\n"
                 "CACHE-CONTROL: max-age=1800\r\n"
+                "EXT:\r\n"
                 f"LOCATION: {location}\r\n"
                 f"ST: {st_match}\r\n"
                 f"USN: {usn}\r\n"
