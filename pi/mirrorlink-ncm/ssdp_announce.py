@@ -114,6 +114,11 @@ DESCRIPTION_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
     </serviceList>
     <attributeList>
       <attribute>
+        <name>urn:schemas-carconnectivity-org:ml-1-0</name>
+        <mandatory>1</mandatory>
+        <symbolValue><majorVersion>1</majorVersion><minorVersion>0</minorVersion></symbolValue>
+      </attribute>
+      <attribute>
         <name>urn:schemas-carconnectivity-org:ml-1-1</name>
         <mandatory>1</mandatory>
         <symbolValue><majorVersion>1</majorVersion><minorVersion>1</minorVersion></symbolValue>
