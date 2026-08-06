@@ -1,0 +1,196 @@
+[ssdp] device UUID for this run: 9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[http] serving /description.xml on http://192.168.42.1:8080/description.xml
+[ssdp] NOTIFY ssdp:alive NT=upnp:rootdevice
+[ssdp] listening for M-SEARCH on 239.255.255.250:1900 (interface usb0/192.168.42.1)
+[ssdp] NOTIFY ssdp:alive NT=uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:device:TmServerDevice:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmApplicationServer:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmClientProfile:1
+[http] 192.168.42.21 - "GET /description.xml HTTP/1.1" 200 -
+[http] description.xml fetched by 192.168.42.21 — replied with:
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+
+  <URLBase>http://192.168.42.1:8080/</URLBase>
+
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:TmServerDevice:1</deviceType>
+    <friendlyName>9CarPlay MirrorLink Bridge</friendlyName>
+    <manufacturer>9CarPlay Project</manufacturer>
+    <modelName>MirrorLink NCM Bridge</modelName>
+    <modelNumber>0.1</modelNumber>
+    <serialNumber>0123456789abcdef</serialNumber>
+    <UDN>uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554</UDN>
+
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:TmApplicationServer:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:TmApplicationServer1</serviceId>
+        <SCPDURL>/scpd_TmApplicationServer.xml</SCPDURL>
+        <controlURL>/control_TmApplicationServer</controlURL>
+        <eventSubURL>/event_TmApplicationServer</eventSubURL>
+      </service>
+
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:TmClientProfile:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:TmClientProfile1</serviceId>
+        <SCPDURL>/scpd_TmClientProfile.xml</SCPDURL>
+        <controlURL>/control_TmClientProfile</controlURL>
+        <eventSubURL>/event_TmClientProfile</eventSubURL>
+      </service>
+    </serviceList>
+  </device>
+</root>
+
+[http] 192.168.42.21 - "GET /description.xml HTTP/1.1" 200 -
+[http] description.xml fetched by 192.168.42.21 — replied with:
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+
+  <URLBase>http://192.168.42.1:8080/</URLBase>
+
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:TmServerDevice:1</deviceType>
+    <friendlyName>9CarPlay MirrorLink Bridge</friendlyName>
+    <manufacturer>9CarPlay Project</manufacturer>
+    <modelName>MirrorLink NCM Bridge</modelName>
+    <modelNumber>0.1</modelNumber>
+    <serialNumber>0123456789abcdef</serialNumber>
+    <UDN>uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554</UDN>
+
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:TmApplicationServer:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:TmApplicationServer1</serviceId>
+        <SCPDURL>/scpd_TmApplicationServer.xml</SCPDURL>
+        <controlURL>/control_TmApplicationServer</controlURL>
+        <eventSubURL>/event_TmApplicationServer</eventSubURL>
+      </service>
+
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:TmClientProfile:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:TmClientProfile1</serviceId>
+        <SCPDURL>/scpd_TmClientProfile.xml</SCPDURL>
+        <controlURL>/control_TmClientProfile</controlURL>
+        <eventSubURL>/event_TmClientProfile</eventSubURL>
+      </service>
+    </serviceList>
+  </device>
+</root>
+
+[http] 192.168.42.21 - "GET /scpd_TmApplicationServer.xml HTTP/1.1" 200 -
+[http] SCPD fetched for service 'TmApplicationServer' — head unit is reading our action list
+[http] 192.168.42.21 - "GET /scpd_TmClientProfile.xml HTTP/1.1" 200 -
+[http] SCPD fetched for service 'TmClientProfile' — head unit is reading our action list
+[ssdp] NOTIFY ssdp:alive NT=upnp:rootdevice
+[ssdp] NOTIFY ssdp:alive NT=uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:device:TmServerDevice:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmApplicationServer:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmClientProfile:1
+[ssdp] NOTIFY ssdp:alive NT=upnp:rootdevice
+[ssdp] NOTIFY ssdp:alive NT=uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:device:TmServerDevice:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmApplicationServer:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmClientProfile:1
+[ssdp] NOTIFY ssdp:alive NT=upnp:rootdevice
+[ssdp] NOTIFY ssdp:alive NT=uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:device:TmServerDevice:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmApplicationServer:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmClientProfile:1
+[ssdp] NOTIFY ssdp:alive NT=upnp:rootdevice
+[ssdp] NOTIFY ssdp:alive NT=uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:device:TmServerDevice:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmApplicationServer:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmClientProfile:1
+[http] 192.168.42.21 - "POST /control_TmClientProfile HTTP/1.1" 200 -
+[http] head unit invoked action 'SetClientProfile' on TmClientProfile — replied with a best-effort response
+POST /control_TmClientProfile SOAPACTION='"urn:schemas-upnp-org:service:TmClientProfile:1#SetClientProfile"'
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+ <s:Body>
+  <u:SetClientProfile xmlns:u="urn:schemas-upnp-org:service:TmClientProfile:1">
+   <ProfileID>0</ProfileID>
+   <ClientProfile>&lt;clientProfile&gt;
+&lt;clientID&gt;MLClientHonda&lt;/clientID&gt;
+&lt;manufacturer&gt;Honda&lt;/manufacturer&gt;
+&lt;modelName&gt;NR-241WH&lt;/modelName&gt;
+&lt;iconPreference&gt;
+&lt;mimetype&gt;image/png&lt;/mimetype&gt;
+&lt;width&gt;120&lt;/width&gt;
+&lt;height&gt;120&lt;/height&gt;
+&lt;depth&gt;24&lt;/depth&gt;
+&lt;/iconPreference&gt;
+&lt;connectivity&gt;
+&lt;bluetooth&gt;
+&lt;bdAddr&gt;fc62b9205299&lt;/bdAddr&gt;
+&lt;startConnection&gt;false&lt;/startConnection&gt;
+&lt;/bluetooth&gt;
+&lt;/connectivity&gt;
+&lt;rtpStreaming&gt;
+&lt;payloadType&gt;99&lt;/payloadType&gt;
+&lt;audioIPL&gt;9600&lt;/audioIPL&gt;
+&lt;audioMPL&gt;19200&lt;/audioMPL&gt;
+&lt;/rtpStreaming&gt;
+&lt;contentRules&gt;
+&lt;rule&gt;
+&lt;ruleId&gt;0&lt;/ruleId&gt;
+&lt;ruleValue&gt;0x6E978D5&lt;/ruleValue&gt;
+&lt;/rule&gt;
+&lt;rule&gt;
+&lt;ruleId&gt;3&lt;/ruleId&gt;
+&lt;ruleValue&gt;300&lt;/ruleValue&gt;
+&lt;/rule&gt;
+&lt;/contentRules&gt;
+&lt;/clientProfile&gt;
+</ClientProfile>
+  </u:SetClientProfile>
+ </s:Body>
+</s:Envelope>
+
+[http] 192.168.42.21 - "POST /control_TmApplicationServer HTTP/1.1" 200 -
+[http] head unit invoked action 'GetApplicationList' on TmApplicationServer — replied with a best-effort response
+POST /control_TmApplicationServer SOAPACTION='"urn:schemas-upnp-org:service:TmApplicationServer:1#GetApplicationList"'
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+ <s:Body>
+  <u:GetApplicationList xmlns:u="urn:schemas-upnp-org:service:TmApplicationServer:1">
+   <AppListingFilter>*</AppListingFilter>
+   <ProfileID>0</ProfileID>
+  </u:GetApplicationList>
+ </s:Body>
+</s:Envelope>
+
+[ssdp] NOTIFY ssdp:alive NT=upnp:rootdevice
+[ssdp] NOTIFY ssdp:alive NT=uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:device:TmServerDevice:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmApplicationServer:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmClientProfile:1
+[ssdp] NOTIFY ssdp:alive NT=upnp:rootdevice
+[ssdp] NOTIFY ssdp:alive NT=uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:device:TmServerDevice:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmApplicationServer:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmClientProfile:1
+[ssdp] NOTIFY ssdp:alive NT=upnp:rootdevice
+[ssdp] NOTIFY ssdp:alive NT=uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:device:TmServerDevice:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmApplicationServer:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmClientProfile:1
+[ssdp] NOTIFY ssdp:alive NT=upnp:rootdevice
+[ssdp] NOTIFY ssdp:alive NT=uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:device:TmServerDevice:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmApplicationServer:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmClientProfile:1
+[ssdp] NOTIFY ssdp:alive NT=upnp:rootdevice
+[ssdp] NOTIFY ssdp:alive NT=uuid:9e78c2fc-d363-4c69-add8-2fd90bf6f554
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:device:TmServerDevice:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmApplicationServer:1
+[ssdp] NOTIFY ssdp:alive NT=urn:schemas-upnp-org:service:TmClientProfile:1
+^C[ssdp] sent NOTIFY ssdp:byebye

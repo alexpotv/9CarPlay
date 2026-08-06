@@ -1,0 +1,11 @@
+Detected device
+
+Assigned IP address
+
+Selected MirrorLink
+
+MirrorLink Status (connecting)
+
+MirrorLink Status (no DAP server) [error is O rather than -]
+
+MirrorLink Status (disconnected)
