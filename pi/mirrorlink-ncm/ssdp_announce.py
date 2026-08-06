@@ -218,7 +218,9 @@ SOAP_RESPONSE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 # this existed, GetApplicationList always returned an empty ApplicationList, which is exactly why
 # the head unit's diagnostics screen showed "MirrorLink Status (no DAP server)" — it never got as
 # far as LaunchApplication. appID/name/format values are taken directly from the spec's own
-# worked example in clause 5.5.4.
+# worked example in clause 5.5.4. appCategory is NOT in that worked example (a spec inconsistency
+# — the example simply omits an element the normative prose right above it says "shall" be set),
+# so it's added here to satisfy the normative requirement rather than copied from the example.
 #
 # The A_ARG_TYPE_AppList XSD (clause 6.2) marks <Signature> as minOccurs="1" on <appList> itself —
 # mandatory, not optional, same situation as X_SIGNATURE_XML above. We have no real DAP-issued
@@ -234,6 +236,9 @@ DAP_APP_LIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
       <protocolID>DAP</protocolID>
       <format>1.1</format>
     </remotingInfo>
+    <appInfo>
+      <appCategory>0xF0000001</appCategory>
+    </appInfo>
   </app>
   <Signature Id="AppListSignature" xmlns="http://www.w3.org/2000/09/xmldsig#">
     <SignedInfo>
