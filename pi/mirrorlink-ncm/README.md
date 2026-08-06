@@ -133,13 +133,25 @@ yet).
 - `setup_ncm_gadget.sh` — configfs setup for a USB CDC-NCM gadget (Linux's built-in `usb_f_ncm`
   kernel function — no custom userspace daemon needed for the USB side itself, unlike the AOA
   gadget's FunctionFS approach). Brings up a `usb0` network interface on the Pi.
+- `cycle_usb.sh` — soft-cycles the gadget's UDC binding (see "Why cycling instead of physically
+  unplugging" below) and (re-)applies the Pi's IP/link-up state every time it runs.
 - `ssdp_announce.py` — once the NCM link has an IP address, this sends periodic UPnP `NOTIFY
-  ssdp:alive` multicast announcements (per the spec text above), serves a minimal UPnP device
-  description XML over HTTP, and responds to `M-SEARCH` queries. Advertises two UPnP service types
-  confirmed present as literal strings in the head unit's own firmware:
-  `urn:schemas-upnp-org:service:TmApplicationServer:1` and
-  `urn:schemas-upnp-org:service:TmClientProfile:1` ("Tm" = Terminal Mode, the CCC framework
-  MirrorLink is built on).
+  ssdp:alive` multicast announcements, serves a UPnP device description XML plus per-service SCPD
+  (action list) XML over HTTP, handles SOAP `POST` control requests, and handles GENA
+  `SUBSCRIBE`/`UNSUBSCRIBE` on `/eventSub`. Advertises two UPnP service types confirmed present as
+  literal strings in the head unit's own firmware — `urn:schemas-upnp-org:service:
+  TmApplicationServer:1` and `urn:schemas-upnp-org:service:TmClientProfile:1` ("Tm" = Terminal
+  Mode, the CCC framework MirrorLink is built on) — and implements enough of the standard UPnP
+  control/eventing surface (confirmed via firmware strings to be a CyberGarage/CyberLink C++ UPnP
+  stack: SOAP-over-HTTP with a `SOAPACTION` header, GENA eventing, and literal paths
+  `/description.xml` / `/eventSub`) to respond meaningfully rather than 404 to whatever the head
+  unit tries next. Action names on each service (`GetApplicationList`, `LaunchApplication`,
+  `GetApplicationCertificateInfo`, etc. on `TmApplicationServer`; `GetMaxNumProfiles`,
+  `GetClientProfile`, `SetClientProfile` on `TmClientProfile`) are inferred from internal C++
+  method names adjacent to the service-type strings in the firmware, not confirmed against a real
+  SCPD/WSDL — every control request is logged in full (path, SOAPACTION, body) regardless of
+  whether we recognize the action, specifically so a real invocation can be captured and the
+  actual argument list learned from what the head unit sends.
 
 ## Known gaps / best-effort guesses that may need correcting
 
@@ -152,12 +164,43 @@ yet).
   `192.168.42.0/24`/`169.254.x.x` address strings found in `vncdiscoverer-usb.dll`, not confirmed.
   The head unit may expect to self-assign via a specific mechanism (static, link-local, or DHCP) —
   not yet known which.
+- **SCPD action arguments are unknown.** Actions are declared with zero arguments, which keeps
+  the SCPD schema-valid but means any action requiring input (e.g. `LaunchApplication` almost
+  certainly needs an app identifier) can't yet be answered meaningfully — the control handler logs
+  the raw SOAP body of every invocation so real argument names/values can be read off a live
+  capture once the head unit actually calls one.
 - **The "MirrorLink USB command" precondition**: the spec text says the phone enables CDC/NCM and
   starts advertising "when receiving the MirrorLink USB command" — it's not yet clear whether this
   refers to something the head unit sends first (in which case our gadget may need to already be
   listening for it before switching to NCM, similar to AOA's two-stage identity switch) or whether
   simply presenting as CDC-NCM from first enumeration is sufficient to test. Starting simple
   (advertise unconditionally) is the right first experiment; revisit if it's silently ignored.
+
+## Next test: does the head unit fetch SCPD / invoke a control action now?
+
+Run a normal Quickstart trial (start `ssdp_announce.py`, then `cycle_usb.sh`) and read the
+`[http]` console log, which now shows every HTTP request received, in order — this alone answers
+several open questions from one trial, no `tcpdump` required:
+
+- **Nothing beyond the earlier `GET /description.xml`** (or not even that) — means the head unit
+  isn't proceeding past SSDP/description at all, and the SCPD 404 theory is wrong; the blocker is
+  upstream (addressing, the device type URN, or something at the SSDP layer itself).
+- **`GET /scpd_TmApplicationServer.xml` and/or `GET /scpd_TmClientProfile.xml` appear**, logged
+  with `"SCPD fetched for service ..."` — confirms the head unit is a real UPnP control point
+  progressing normally through discovery → description → SCPD, and was very likely stalling on
+  the previous 404s. Whether it goes on to invoke an action or subscribe next is the thing to
+  watch for immediately after.
+- **`SUBSCRIBE /eventSub` appears** — confirms GENA eventing is part of the flow; check whether it
+  proceeds to invoke a control action after the subscription is accepted.
+- **`POST /control_<service>` appears with a `SOAPACTION`** — this is the actual goal: read the
+  logged action name and full SOAP body. Whichever action comes first (most likely something on
+  `TmApplicationServer`, e.g. `GetApplicationCertificateInfo` given this is the point where a
+  cert/identity check would plausibly start) tells us exactly what real response data needs to be
+  implemented next, and the raw body reveals any arguments we don't currently know about.
+
+Whatever the result, it narrows the search meaningfully — report back the full `[http]` log from
+one trial and we'll know which of the remaining unknowns (device type URN, IP scheme, SCPD
+arguments, or something past this layer entirely) to chase next.
 
 ## Why cycling instead of physically unplugging
 

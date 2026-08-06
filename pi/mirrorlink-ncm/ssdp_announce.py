@@ -6,11 +6,21 @@ phone-side MirrorLink Server "shall enable CDC/NCM and start advertising itself 
 messages" — this script is that SSDP:alive advertisement, to run once setup_ncm_gadget.sh has
 brought up the USB-NCM link and an IP address.
 
-UNTESTED ON REAL HARDWARE. The two UPnP service types advertised here
-(TmApplicationServer:1, TmClientProfile:1) are confirmed present as literal strings in the head
-unit's own firmware (strings_out.txt) — "Tm" = Terminal Mode, the CCC framework MirrorLink is
-built on. The root DEVICE type URN was NOT found in the firmware strings dump, so
-DEVICE_TYPE below is a best-effort guess following standard UPnP naming convention
+CONFIRMED WORKING TO THE POINT OF SSDP DISCOVERY: on real hardware this produces a "Detected
+Device" event in the head unit's MirrorLink diagnostics screen (see pi/mirrorlink-ncm/README.md
+Quickstart), followed a few seconds later by "MirrorLink Status (disconnected)". The session does
+not yet progress past that. The two UPnP service types advertised here (TmApplicationServer:1,
+TmClientProfile:1) are confirmed present as literal strings in the head unit's own firmware
+(strings_out.txt) — "Tm" = Terminal Mode, the CCC framework MirrorLink is built on. So are the
+literal HTTP paths /description.xml and /eventSub, the CyberGarage-HTTP/1.0 UPnP stack signature
+(confirming this is a standard SOAP-over-HTTP + GENA eventing UPnP control point, not something
+bespoke), and SOAP action names inferred from internal C++ method names next to the two service
+strings (ASSERVICE_* / CPSERVICE_*) — see references/cr-v/PROTOCOL_ANALYSIS.md for the full
+writeup. This version adds real SCPD, SOAP control, and GENA subscribe endpoints based on that
+evidence, to test whether the earlier 404s on those paths were what caused the disconnect.
+
+The root DEVICE type URN was NOT found in the firmware strings dump, so DEVICE_TYPE below is
+still a best-effort guess following standard UPnP naming convention
 ("urn:schemas-upnp-org:device:<Type>:<version>") and may need correcting once real traffic can be
 observed (e.g. via a capture of the head unit's own M-SEARCH request, which would include the ST
 it's actually looking for).
@@ -33,6 +43,7 @@ import uuid
 
 SSDP_ADDR = "239.255.255.250"
 SSDP_PORT = 1900
+EVENT_SUB_PATH = "/eventSub"  # confirmed literal string in firmware, shared across services
 
 # Best-effort guess — see module docstring. Adjust if a real capture shows otherwise.
 DEVICE_TYPE = "urn:schemas-upnp-org:device:TerminalModeDevice:1"
@@ -40,6 +51,27 @@ SERVICE_TYPES = [
     "urn:schemas-upnp-org:service:TmApplicationServer:1",
     "urn:schemas-upnp-org:service:TmClientProfile:1",
 ]
+
+# Action names inferred from internal C++ method names (ASSERVICE_*/CPSERVICE_*) found adjacent
+# to the TmApplicationServer/TmClientProfile strings in the firmware — NOT confirmed against a
+# real SCPD/WSDL, just the best available evidence. Argument lists are unknown, so actions are
+# declared with no arguments for now; this is enough to be schema-valid and to observe, via the
+# controlURL handler's logging, which action(s) the head unit actually tries to invoke first.
+SERVICE_ACTIONS = {
+    "TmApplicationServer": [
+        "GetApplicationList",
+        "GetApplicationStatus",
+        "LaunchApplication",
+        "TerminateApplication",
+        "GetApplicationCertificateInfo",
+        "GetCertifiedApplicationsList",
+    ],
+    "TmClientProfile": [
+        "GetMaxNumProfiles",
+        "GetClientProfile",
+        "SetClientProfile",
+    ],
+}
 
 DEVICE_UUID = str(uuid.uuid5(uuid.NAMESPACE_DNS, "9carplay-mirrorlink-ncm-bridge"))
 
@@ -64,13 +96,39 @@ SERVICE_XML_TEMPLATE = """      <service>
         <serviceId>urn:upnp-org:serviceId:{service_id}</serviceId>
         <SCPDURL>/scpd_{service_id}.xml</SCPDURL>
         <controlURL>/control_{service_id}</controlURL>
-        <eventSubURL>/event_{service_id}</eventSubURL>
+        <eventSubURL>{event_sub_path}</eventSubURL>
       </service>"""
+
+SCPD_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <actionList>
+{actions}
+  </actionList>
+  <serviceStateTable>
+  </serviceStateTable>
+</scpd>
+"""
+
+SCPD_ACTION_TEMPLATE = """    <action>
+      <name>{name}</name>
+    </action>"""
+
+SOAP_RESPONSE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:{action}Response xmlns:u="{service_type}">
+    </u:{action}Response>
+  </s:Body>
+</s:Envelope>
+"""
 
 
 def build_description_xml():
     services = "\n".join(
-        SERVICE_XML_TEMPLATE.format(service_type=st, service_id=st.split(":")[-2])
+        SERVICE_XML_TEMPLATE.format(
+            service_type=st, service_id=st.split(":")[-2], event_sub_path=EVENT_SUB_PATH
+        )
         for st in SERVICE_TYPES
     )
     return DESCRIPTION_XML_TEMPLATE.format(
@@ -78,18 +136,89 @@ def build_description_xml():
     ).encode("utf-8")
 
 
+def build_scpd_xml(service_id):
+    actions = SERVICE_ACTIONS.get(service_id, [])
+    actions_xml = "\n".join(SCPD_ACTION_TEMPLATE.format(name=a) for a in actions)
+    return SCPD_XML_TEMPLATE.format(actions=actions_xml).encode("utf-8")
+
+
+def service_type_for_id(service_id):
+    for st in SERVICE_TYPES:
+        if st.split(":")[-2] == service_id:
+            return st
+    return None
+
+
 class DescriptionHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def _send_xml(self, body, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "text/xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         if self.path == "/description.xml":
-            body = build_description_xml()
+            self._send_xml(build_description_xml())
+            return
+        if self.path.startswith("/scpd_") and self.path.endswith(".xml"):
+            service_id = self.path[len("/scpd_"):-len(".xml")]
+            if service_id in SERVICE_ACTIONS:
+                print(f"[http] SCPD fetched for service {service_id!r} — "
+                      f"head unit is reading our action list")
+                self._send_xml(build_scpd_xml(service_id))
+                return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b""
+        soapaction = self.headers.get("SOAPACTION", "")
+        print(f"[http] POST {self.path} SOAPACTION={soapaction!r}\n{body.decode('utf-8', 'replace')}")
+
+        if self.path.startswith("/control_"):
+            service_id = self.path[len("/control_"):]
+            service_type = service_type_for_id(service_id)
+            action = None
+            if "#" in soapaction:
+                action = soapaction.rsplit("#", 1)[-1].strip('"')
+            if service_type and action:
+                print(f"[http] head unit invoked action {action!r} on {service_id} — "
+                      f"replying with a stub empty success response")
+                resp = SOAP_RESPONSE_TEMPLATE.format(
+                    action=action, service_type=service_type
+                ).encode("utf-8")
+                self._send_xml(resp)
+                return
+
+        self.send_response(404)
+        self.end_headers()
+
+    def do_SUBSCRIBE(self):
+        if self.path == EVENT_SUB_PATH:
+            sid = f"uuid:{uuid.uuid4()}"
+            callback = self.headers.get("CALLBACK", "")
+            timeout = self.headers.get("TIMEOUT", "Second-1800")
+            print(f"[http] SUBSCRIBE {self.path} CALLBACK={callback!r} TIMEOUT={timeout!r} "
+                  f"-> accepting with SID={sid}")
             self.send_response(200)
-            self.send_header("Content-Type", "text/xml; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("SID", sid)
+            self.send_header("TIMEOUT", timeout)
+            self.send_header("Content-Length", "0")
             self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
+            return
+        self.send_response(412)  # precondition failed — GENA's code for unknown subscription
+        self.end_headers()
+
+    def do_UNSUBSCRIBE(self):
+        sid = self.headers.get("SID", "")
+        print(f"[http] UNSUBSCRIBE {self.path} SID={sid!r}")
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def log_message(self, fmt, *args):
         print(f"[http] {self.address_string()} - {fmt % args}")
