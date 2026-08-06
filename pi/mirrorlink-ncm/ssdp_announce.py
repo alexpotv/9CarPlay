@@ -151,6 +151,10 @@ def send_notify_byebye(sock):
 def announce_loop(ip, port, interval_s):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
+    # Without this, outgoing multicast sends follow the default route (e.g. wlan0/eth0)
+    # rather than the NCM link, so the head unit never sees them. Binding to the NCM
+    # interface's own IP forces sends out over usb0.
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
     try:
         while True:
             send_notify_alive(sock, ip, port)
@@ -168,9 +172,12 @@ def msearch_responder(ip, port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("", SSDP_PORT))
-    mreq = struct.pack("4sl", socket.inet_aton(SSDP_ADDR), socket.INADDR_ANY)
+    # Join the multicast group only on the NCM interface (by its IP), not INADDR_ANY —
+    # otherwise M-SEARCH traffic from unrelated devices on other interfaces (home
+    # wifi/ethernet) gets mixed in, as seen with a stray DIAL M-SEARCH from 192.168.1.x.
+    mreq = struct.pack("4s4s", socket.inet_aton(SSDP_ADDR), socket.inet_aton(ip))
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    print(f"[ssdp] listening for M-SEARCH on {SSDP_ADDR}:{SSDP_PORT}")
+    print(f"[ssdp] listening for M-SEARCH on {SSDP_ADDR}:{SSDP_PORT} (interface {ip})")
 
     while True:
         data, addr = sock.recvfrom(4096)
