@@ -40,6 +40,7 @@ import sys
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 
 SSDP_ADDR = "239.255.255.250"
@@ -227,6 +228,9 @@ SOAP_RESPONSE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 # signing key, so this is the same kind of syntactically well-formed but cryptographically
 # meaningless placeholder, with Reference URI="#mlServerAppList" pointing at the appList's own
 # xml:id per clause 5.6.
+APP_ID_DAP = "0x9016"  # must match the <appID> below — used to recognize LaunchApplication(AppID=...)
+DAP_PORT = 8082  # raw TCP port the DAP app's AppURI (dap://<ip>:<port>) points a head unit at
+
 DAP_APP_LIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <appList xml:id="mlServerAppList" xmlns="urn:schemas-upnp-org:tmapplicationserver:applist-1-0">
   <app>
@@ -275,7 +279,9 @@ ACTION_RESPONSE_BODIES = {
     # of the SOAP response element (same embedding shape as ClientProfile below).
     "GetApplicationList": f"<AppListing>{xml_escape(DAP_APP_LIST_XML)}</AppListing>",  # Table 4-11
     "GetApplicationStatus": "<AppStatus></AppStatus>",  # Table 4-17
-    "LaunchApplication": "<AppURI></AppURI>",  # Table 4-13 — real value is Phase B, unimplemented
+    # LaunchApplication is intentionally NOT a static entry here — unlike the other actions, its
+    # response (AppURI) depends on which AppID was requested, so it's built per-request in
+    # build_launch_application_body() below instead of looked up from this dict.
     "TerminateApplication": "<TerminationResult>true</TerminationResult>",  # Table 4-15
     # Confirmed output argument name (CertifiedAppList) — empty, since we have no genuine
     # CCC-certified applications to report. This is very likely where the lack of real
@@ -285,6 +291,32 @@ ACTION_RESPONSE_BODIES = {
     # don't know what the head unit expects to see distinct from what it sent us.
     "SetClientProfile": f"<ResultProfile>{_CLIENT_PROFILE_XML}</ResultProfile>",
 }
+
+
+def build_launch_application_body(request_xml, ip, dap_port):
+    """Build LaunchApplication's response body (Table 4-13: OUT argument AppURI).
+
+    Per Table 4-7, a DAP AppURI's scheme/host/port are all MANDATORY:
+    "dap://<ip>:<port>", pointing at a raw TCP endpoint the head unit connects to directly to run
+    the actual Device Attestation Protocol exchange — see dap_listener() below, which is that
+    endpoint. We only have one real app (DAP) to launch; anything else gets an empty AppURI (error
+    code 810 "Bad AppId" territory, but a well-formed empty response rather than a fault since we
+    don't have real error-fault plumbing here).
+    """
+    app_id = None
+    try:
+        root = ET.fromstring(request_xml)
+        for el in root.iter():
+            if el.tag.rsplit("}", 1)[-1] == "AppID":
+                app_id = (el.text or "").strip()
+                break
+    except ET.ParseError:
+        pass
+
+    if app_id == APP_ID_DAP:
+        return f"<AppURI>dap://{ip}:{dap_port}</AppURI>"
+    print(f"[http] LaunchApplication requested unknown AppID={app_id!r} — returning empty AppURI")
+    return "<AppURI></AppURI>"
 
 
 # TEMPORARY test override — bypasses build_description_xml() below entirely and serves this
@@ -441,7 +473,11 @@ class DescriptionHandler(http.server.BaseHTTPRequestHandler):
             if "#" in soapaction:
                 action = soapaction.rsplit("#", 1)[-1].strip('"')
             if service_type and action:
-                resp_body = ACTION_RESPONSE_BODIES.get(action, "")
+                if action == "LaunchApplication":
+                    ip, _port = self.server.server_address
+                    resp_body = build_launch_application_body(body, ip, self.server.dap_port)
+                else:
+                    resp_body = ACTION_RESPONSE_BODIES.get(action, "")
                 resp = SOAP_RESPONSE_TEMPLATE.format(
                     action=action, service_type=service_type, body=resp_body
                 ).encode("utf-8")
@@ -499,7 +535,7 @@ class MirrorLinkHTTPServer(http.server.ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
-def start_http_server(ip, port):
+def start_http_server(ip, port, dap_port):
     # http.server.HTTPServer is single-threaded and synchronous: with protocol_version
     # "HTTP/1.1" (keep-alive) it fully blocks inside one connection's handle_one_request() loop
     # until that connection closes or times out, so it can't accept a second connection in the
@@ -510,6 +546,7 @@ def start_http_server(ip, port):
     # (description.xml, per-service SCPD, control, eventSub) can all be served independently.
     server = MirrorLinkHTTPServer((ip, port), DescriptionHandler)
     server.daemon_threads = True
+    server.dap_port = dap_port  # read by do_POST's LaunchApplication handling, above
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     print(f"[http] serving /description.xml on http://{ip}:{port}/description.xml")
@@ -636,12 +673,57 @@ def msearch_responder(ip, port, iface):
             print(f"[ssdp] -> M-SEARCH reply to {addr}:\n{reply.decode('ascii')}")
 
 
+def dap_listener(ip, port):
+    """Raw TCP listener for the Device Attestation Protocol endpoint advertised via
+    LaunchApplication's AppURI (see build_launch_application_body() above).
+
+    We do NOT know the DAP wire format — it's defined in a part of ETSI TS 103 544 we don't have
+    saved locally (the three docs under references/cr-v/etsi_spec/ only cover the UPnP services,
+    not DAP itself), and PROTOCOL_ANALYSIS.md's Ghidra findings only got as far as identifying
+    that vncviewersdk.dll/MIrrorLink.exe implement DAP, not the byte-level protocol. So this
+    listener's job is purely diagnostic: accept the connection, log every byte the head unit
+    sends (hex + best-effort UTF-8 decode, same style as the USB command listener and the 404
+    POST logging elsewhere in this file), and see what we're actually dealing with. It sends
+    nothing back — this is intentional, so the FIRST bytes we ever see are unambiguously the head
+    unit's, not a reaction to anything we guessed at.
+    """
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((ip, port))
+    srv.listen(5)
+    print(f"[dap] listening for DAP connections on {ip}:{port}")
+
+    while True:
+        conn, addr = srv.accept()
+        print(f"[dap] connection from {addr}")
+
+        def handle(conn=conn, addr=addr):
+            with conn:
+                conn.settimeout(30)
+                try:
+                    while True:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            print(f"[dap] {addr} closed the connection")
+                            return
+                        print(f"[dap] <- {len(chunk)} bytes from {addr}:\n"
+                              f"  hex:  {chunk.hex()}\n"
+                              f"  text: {chunk.decode('utf-8', 'replace')!r}")
+                except socket.timeout:
+                    print(f"[dap] {addr} idle for 30s, closing")
+                except (ConnectionResetError, BrokenPipeError) as exc:
+                    print(f"[dap] {addr} disconnected ({exc.__class__.__name__})")
+
+        threading.Thread(target=handle, daemon=True).start()
+
+
 def main():
     global DEVICE_UUID
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--ip", default="192.168.42.1", help="IP address to advertise (must match setup_ncm_gadget.sh)")
     ap.add_argument("--port", type=int, default=8080, help="HTTP port for the device description")
+    ap.add_argument("--dap-port", type=int, default=DAP_PORT, help="TCP port for the raw DAP listener")
     ap.add_argument("--interval", type=int, default=30, help="seconds between NOTIFY ssdp:alive bursts")
     ap.add_argument("--iface", default="usb0", help="NCM network interface name (for SO_BINDTODEVICE filtering)")
     ap.add_argument("--fixed-uuid", action="store_true",
@@ -654,9 +736,12 @@ def main():
         DEVICE_UUID = str(uuid.uuid5(uuid.NAMESPACE_DNS, "9carplay-mirrorlink-ncm-bridge"))
     print(f"[ssdp] device UUID for this run: {DEVICE_UUID}")
 
-    start_http_server(args.ip, args.port)
+    start_http_server(args.ip, args.port, args.dap_port)
 
     t = threading.Thread(target=msearch_responder, args=(args.ip, args.port, args.iface), daemon=True)
+    t.start()
+
+    t = threading.Thread(target=dap_listener, args=(args.ip, args.dap_port), daemon=True)
     t.start()
 
     try:
