@@ -259,12 +259,19 @@ _CLIENT_PROFILE_XML = (
     "&lt;clientID&gt;9carplay-001&lt;/clientID&gt;"
 )
 ACTION_RESPONSE_BODIES = {
-    # Escaped, since ApplicationList's value is itself a full XML document embedded as text
-    # content of the SOAP response element (same embedding shape as ClientProfile below).
-    "GetApplicationList": f"<ApplicationList>{xml_escape(DAP_APP_LIST_XML)}</ApplicationList>",
-    "GetApplicationStatus": "<ApplicationStatus></ApplicationStatus>",
-    "LaunchApplication": "<Result>0</Result>",
-    "TerminateApplication": "<Result>0</Result>",
+    # Output argument names below are the literal names from each action's Arguments table in
+    # ETSI TS 103 544-9 (clause 4.5), NOT the generic "Result"/service-name-ish guesses this
+    # dict previously used — those guesses were silently wrong (GetApplicationList really
+    # returns AppListing, not ApplicationList) and are the reason a real DAP app entry still
+    # produced "no DAP server" on hardware: the head unit's parser looks up the response by
+    # this exact element name and treats anything else as an absent/empty result.
+    #
+    # Escaped, since AppListing's value is itself a full XML document embedded as text content
+    # of the SOAP response element (same embedding shape as ClientProfile below).
+    "GetApplicationList": f"<AppListing>{xml_escape(DAP_APP_LIST_XML)}</AppListing>",  # Table 4-11
+    "GetApplicationStatus": "<AppStatus></AppStatus>",  # Table 4-17
+    "LaunchApplication": "<AppURI></AppURI>",  # Table 4-13 — real value is Phase B, unimplemented
+    "TerminateApplication": "<TerminationResult>true</TerminationResult>",  # Table 4-15
     # Confirmed output argument name (CertifiedAppList) — empty, since we have no genuine
     # CCC-certified applications to report. This is very likely where the lack of real
     # credentials becomes visible to the head unit's attestation logic.
