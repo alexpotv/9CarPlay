@@ -52,25 +52,43 @@ SERVICE_TYPES = [
     "urn:schemas-upnp-org:service:TmClientProfile:1",
 ]
 
-# Action names inferred from internal C++ method names (ASSERVICE_*/CPSERVICE_*) found adjacent
-# to the TmApplicationServer/TmClientProfile strings in the firmware — NOT confirmed against a
-# real SCPD/WSDL, just the best available evidence. Argument lists are unknown, so actions are
-# declared with no arguments for now; this is enough to be schema-valid and to observe, via the
-# controlURL handler's logging, which action(s) the head unit actually tries to invoke first.
+# Action names AND argument names confirmed directly from the head unit's own application binary
+# (MIrrorLink.exe, extracted from the WinCE ROM and reverse-engineered in Ghidra — see
+# references/cr-v/PROTOCOL_ANALYSIS.md). This superseded an earlier guess based only on internal
+# C++ method names in a different DLL (vncdiscoverer-usb.dll), which also included
+# GetApplicationCertificateInfo/GetMaxNumProfiles/GetClientProfile — none of those three appear as
+# real action-name strings anywhere in MIrrorLink.exe, so they've been dropped here as likely not
+# actually used actions in this deployment (they may exist unused in a generic shared SDK class).
+#
+# Each entry: action name -> list of (argument name, direction). Directions and names below are
+# confirmed from the actual SOAP-invocation-building code in MIrrorLink.exe, which constructs a
+# named-argument list before calling the generic UPnP action-invoke function (thunk_FUN_0008cfc4)
+# — i.e. these are the literal argument names the head unit sends/expects, not guesses. The
+# exception is LaunchApplication's output argument, which is unconfirmed (no literal string found
+# for it), so it's omitted rather than guessed.
 SERVICE_ACTIONS = {
-    "TmApplicationServer": [
-        "GetApplicationList",
-        "GetApplicationStatus",
-        "LaunchApplication",
-        "TerminateApplication",
-        "GetApplicationCertificateInfo",
-        "GetCertifiedApplicationsList",
-    ],
-    "TmClientProfile": [
-        "GetMaxNumProfiles",
-        "GetClientProfile",
-        "SetClientProfile",
-    ],
+    "TmApplicationServer": {
+        "GetApplicationList": [],
+        "GetApplicationStatus": [],
+        "LaunchApplication": [
+            ("AppID", "in"), ("ProfileID", "in"), ("AppURI", "in"),
+        ],
+        "TerminateApplication": [
+            ("AppID", "in"),  # confirmed via log string "TerminateApplication appID : 0x%x"
+        ],
+        # Backed by a class literally named UIMirrorLink_Attestation in MIrrorLink.exe — this is
+        # very likely the actual DAP/certificate-attestation trigger point (see Phase 3 pairing
+        # risk in PROJECT_PLAN.md). Whatever we return in CertifiedAppList almost certainly needs
+        # to reflect genuine CCC certification data to be accepted, which we don't have.
+        "GetCertifiedApplicationsList": [
+            ("AppCertFilter", "in"), ("ProfileID", "in"), ("CertifiedAppList", "out"),
+        ],
+    },
+    "TmClientProfile": {
+        "SetClientProfile": [
+            ("ProfileID", "in"), ("ClientProfile", "in"), ("ResultProfile", "out"),
+        ],
+    },
 }
 
 # Randomized per process run (not a fixed uuid5) so every trial presents as a genuinely new
@@ -112,22 +130,68 @@ SCPD_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 {actions}
   </actionList>
   <serviceStateTable>
+{state_vars}
   </serviceStateTable>
 </scpd>
 """
 
-SCPD_ACTION_TEMPLATE = """    <action>
+SCPD_ACTION_NO_ARGS_TEMPLATE = """    <action>
       <name>{name}</name>
     </action>"""
+
+SCPD_ACTION_WITH_ARGS_TEMPLATE = """    <action>
+      <name>{name}</name>
+      <argumentList>
+{arguments}
+      </argumentList>
+    </action>"""
+
+SCPD_ARGUMENT_TEMPLATE = (
+    '        <argument><name>{arg_name}</name><direction>{direction}</direction>'
+    '<relatedStateVariable>A_ARG_TYPE_{arg_name}</relatedStateVariable></argument>'
+)
+
+SCPD_STATE_VAR_TEMPLATE = (
+    '    <stateVariable sendEvents="no"><name>A_ARG_TYPE_{arg_name}</name>'
+    '<dataType>string</dataType></stateVariable>'
+)
 
 SOAP_RESPONSE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
   <s:Body>
     <u:{action}Response xmlns:u="{service_type}">
+      {body}
     </u:{action}Response>
   </s:Body>
 </s:Envelope>
 """
+
+# Per-action response bodies, using identity values consistent with the USB gadget strings
+# (setup_ncm_gadget.sh) and the UPnP device description above. Output argument NAMES are now
+# confirmed (see SERVICE_ACTIONS above) except for LaunchApplication, which has no confirmed
+# output argument (none found as a literal string) so it's left with a generic placeholder.
+# If the head unit rejects one of these with a SOAP fault (UPnPError), that fault body itself is
+# useful diagnostic information — it's logged in full either way via the POST handler.
+_CLIENT_PROFILE_XML = (
+    "&lt;modelNumber&gt;0.1&lt;/modelNumber&gt;"
+    "&lt;modelName&gt;MirrorLink NCM Bridge (dev)&lt;/modelName&gt;"
+    "&lt;manufacturer&gt;9CarPlay Project&lt;/manufacturer&gt;"
+    "&lt;friendlyName&gt;9CarPlay MirrorLink Bridge&lt;/friendlyName&gt;"
+    "&lt;clientID&gt;9carplay-001&lt;/clientID&gt;"
+)
+ACTION_RESPONSE_BODIES = {
+    "GetApplicationList": "<ApplicationList></ApplicationList>",
+    "GetApplicationStatus": "<ApplicationStatus></ApplicationStatus>",
+    "LaunchApplication": "<Result>0</Result>",
+    "TerminateApplication": "<Result>0</Result>",
+    # Confirmed output argument name (CertifiedAppList) — empty, since we have no genuine
+    # CCC-certified applications to report. This is very likely where the lack of real
+    # credentials becomes visible to the head unit's attestation logic.
+    "GetCertifiedApplicationsList": "<CertifiedAppList></CertifiedAppList>",
+    # Confirmed output argument name (ResultProfile) — echoing back our own identity, since we
+    # don't know what the head unit expects to see distinct from what it sent us.
+    "SetClientProfile": f"<ResultProfile>{_CLIENT_PROFILE_XML}</ResultProfile>",
+}
 
 
 def build_description_xml(ip, port):
@@ -143,9 +207,24 @@ def build_description_xml(ip, port):
 
 
 def build_scpd_xml(service_id):
-    actions = SERVICE_ACTIONS.get(service_id, [])
-    actions_xml = "\n".join(SCPD_ACTION_TEMPLATE.format(name=a) for a in actions)
-    return SCPD_XML_TEMPLATE.format(actions=actions_xml).encode("utf-8")
+    actions_def = SERVICE_ACTIONS.get(service_id, {})
+    action_blocks = []
+    state_var_names = set()
+    for name, args in actions_def.items():
+        if not args:
+            action_blocks.append(SCPD_ACTION_NO_ARGS_TEMPLATE.format(name=name))
+            continue
+        arg_xml = "\n".join(
+            SCPD_ARGUMENT_TEMPLATE.format(arg_name=arg_name, direction=direction)
+            for arg_name, direction in args
+        )
+        action_blocks.append(SCPD_ACTION_WITH_ARGS_TEMPLATE.format(name=name, arguments=arg_xml))
+        state_var_names.update(arg_name for arg_name, _ in args)
+    actions_xml = "\n".join(action_blocks)
+    state_vars_xml = "\n".join(
+        SCPD_STATE_VAR_TEMPLATE.format(arg_name=n) for n in sorted(state_var_names)
+    )
+    return SCPD_XML_TEMPLATE.format(actions=actions_xml, state_vars=state_vars_xml).encode("utf-8")
 
 
 def service_type_for_id(service_id):
@@ -193,10 +272,11 @@ class DescriptionHandler(http.server.BaseHTTPRequestHandler):
             if "#" in soapaction:
                 action = soapaction.rsplit("#", 1)[-1].strip('"')
             if service_type and action:
+                resp_body = ACTION_RESPONSE_BODIES.get(action, "")
                 print(f"[http] head unit invoked action {action!r} on {service_id} — "
-                      f"replying with a stub empty success response")
+                      f"replying with {'a best-effort' if resp_body else 'an empty'} response")
                 resp = SOAP_RESPONSE_TEMPLATE.format(
-                    action=action, service_type=service_type
+                    action=action, service_type=service_type, body=resp_body
                 ).encode("utf-8")
                 self._send_xml(resp)
                 return
