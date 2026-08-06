@@ -2,3 +2,8 @@
 references
 CLAUDE.md
 .claude
+
+# build outputs (compiled gadget daemons, capture dumps, etc.)
+pi/aoa-gadget/aoa_gadget
+pi/aoa-gadget/aoa_gadget_twostage
+pi/aoa-gadget/aoa_capture.bin
