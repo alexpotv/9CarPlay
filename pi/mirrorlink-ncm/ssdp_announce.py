@@ -148,13 +148,15 @@ def send_notify_byebye(sock):
     print("[ssdp] sent NOTIFY ssdp:byebye")
 
 
-def announce_loop(ip, port, interval_s):
+def announce_loop(ip, port, interval_s, iface):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
     # Without this, outgoing multicast sends follow the default route (e.g. wlan0/eth0)
     # rather than the NCM link, so the head unit never sees them. Binding to the NCM
     # interface's own IP forces sends out over usb0.
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
+    if hasattr(socket, "SO_BINDTODEVICE"):
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode() + b"\0")
     try:
         while True:
             send_notify_alive(sock, ip, port)
@@ -164,20 +166,24 @@ def announce_loop(ip, port, interval_s):
         sock.close()
 
 
-def msearch_responder(ip, port):
+def msearch_responder(ip, port, iface):
     location, targets = notify_targets(ip, port)
     by_st = {nt: usn for nt, usn in targets}
     by_st["ssdp:all"] = f"uuid:{DEVICE_UUID}"
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # IP_ADD_MEMBERSHIP's interface field only controls where the join is registered —
+    # it does NOT stop the kernel from delivering multicast packets that arrive on other
+    # interfaces to a socket bound to INADDR_ANY (confirmed live: we kept receiving
+    # M-SEARCH from unrelated devices on the home LAN, e.g. 192.168.1.x, even after
+    # setting it). SO_BINDTODEVICE is the actual per-socket interface filter.
+    if hasattr(socket, "SO_BINDTODEVICE"):
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode() + b"\0")
     sock.bind(("", SSDP_PORT))
-    # Join the multicast group only on the NCM interface (by its IP), not INADDR_ANY —
-    # otherwise M-SEARCH traffic from unrelated devices on other interfaces (home
-    # wifi/ethernet) gets mixed in, as seen with a stray DIAL M-SEARCH from 192.168.1.x.
     mreq = struct.pack("4s4s", socket.inet_aton(SSDP_ADDR), socket.inet_aton(ip))
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    print(f"[ssdp] listening for M-SEARCH on {SSDP_ADDR}:{SSDP_PORT} (interface {ip})")
+    print(f"[ssdp] listening for M-SEARCH on {SSDP_ADDR}:{SSDP_PORT} (interface {iface}/{ip})")
 
     while True:
         data, addr = sock.recvfrom(4096)
@@ -221,15 +227,16 @@ def main():
     ap.add_argument("--ip", default="192.168.42.1", help="IP address to advertise (must match setup_ncm_gadget.sh)")
     ap.add_argument("--port", type=int, default=8080, help="HTTP port for the device description")
     ap.add_argument("--interval", type=int, default=30, help="seconds between NOTIFY ssdp:alive bursts")
+    ap.add_argument("--iface", default="usb0", help="NCM network interface name (for SO_BINDTODEVICE filtering)")
     args = ap.parse_args()
 
     start_http_server(args.ip, args.port)
 
-    t = threading.Thread(target=msearch_responder, args=(args.ip, args.port), daemon=True)
+    t = threading.Thread(target=msearch_responder, args=(args.ip, args.port, args.iface), daemon=True)
     t.start()
 
     try:
-        announce_loop(args.ip, args.port, args.interval)
+        announce_loop(args.ip, args.port, args.interval, args.iface)
     except KeyboardInterrupt:
         sys.exit(0)
 

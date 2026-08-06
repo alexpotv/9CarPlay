@@ -86,3 +86,50 @@ Report back what's observed at each step — particularly whether `usb0` comes u
 on the Pi side at all (confirms the head unit accepts a CDC-NCM device the same way it accepted the
 AOA gadget's enumeration), and whether any traffic (ARP, DHCP, SSDP) arrives from the head unit
 before assuming the SSDP layer itself is wrong.
+
+## Cycling the USB connection without unplugging
+
+The head unit appears to only actively watch for a MirrorLink SSDP announcement in a window
+right after it sees a fresh USB attach — reconnecting `ssdp_announce.py` alone, without a new
+attach event, has not produced a new diagnostics-screen event even when packets are confirmed
+reaching `usb0`. Normally you'd test this by unplugging and replugging the cable, but on this Pi
+the same USB port also supplies power, so a physical unplug isn't practical mid-test.
+
+Instead, force a *soft* disconnect/reconnect at the USB protocol level by unbinding and
+rebinding the gadget's UDC (USB Device Controller). Unbinding drops the D+/D- pull-up resistor,
+which the head unit sees as a real disconnect; rebinding re-asserts it, triggering a full
+re-enumeration (`SET_ADDRESS`, `SET_CONFIGURATION`, etc.) exactly as a physical replug would —
+without touching the cable or losing power. This is the same operation that was used earlier in
+testing to recover from a stuck `not attached` UDC state.
+
+```
+sudo ./cycle_usb.sh          # cycles the ncm0 gadget with a 2s gap by default
+sudo ./cycle_usb.sh ncm0 5   # optional: gadget name, settle time in seconds
+```
+
+Recommended sequence for reproducing a fresh detection event:
+
+1. Start the SSDP announcer *first*, so it's already sending `NOTIFY ssdp:alive` before the
+   head unit re-attaches (its detection window appears to start counting from attach, not from
+   whenever our announcer happens to start):
+   ```
+   sudo python3 ssdp_announce.py --ip 192.168.42.1 --interval 3
+   ```
+   (a short `--interval` is useful for testing so a NOTIFY goes out quickly after the simulated
+   attach — turn it back up for anything closer to normal operation).
+2. In another shell, run the cycle script:
+   ```
+   sudo ./cycle_usb.sh
+   ```
+3. Watch three things at once: `cat /sys/class/udc/*/state` (should go `not attached` →
+   `configured`), `sudo tcpdump -i usb0 -n` (any ARP/DHCP/SSDP traffic from the head unit), and
+   the head unit's MirrorLink/HondaLink diagnostics screen for a new dated event.
+4. If `usb0` doesn't come back up cleanly after the cycle (state stuck at `not attached`), re-add
+   the IP address — unbind/rebind can reset the interface and drop it:
+   ```
+   sudo ip addr add 192.168.42.1/24 dev usb0 2>/dev/null; sudo ip link set usb0 up
+   ```
+
+Each cycle should be treated as one clean trial — if a test doesn't show anything new, re-cycle
+rather than assuming the previous attempt's negative result still holds, since the head unit's
+own state (e.g. having already marked itself "disconnected" once) may affect whether it re-scans.
