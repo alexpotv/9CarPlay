@@ -107,6 +107,7 @@ DESCRIPTION_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
     <manufacturer>9CarPlay Project</manufacturer>
     <modelName>MirrorLink NCM Bridge (dev)</modelName>
     <modelNumber>0.1</modelNumber>
+    <serialNumber>0123456789abcdef</serialNumber>
     <UDN>uuid:{udn}</UDN>
     <serviceList>
 {services}
