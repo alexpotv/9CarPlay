@@ -58,26 +58,37 @@ Needed every time you want to force a new detection event without a full reboot 
 
 ### Running a trial (shared by both cases above)
 
-1. **Start the SSDP announcer FIRST, with a short interval, before triggering the attach**, if
-   it isn't already running. The head unit only appears to watch for our announcement in a
-   window right after it sees a fresh USB attach — the announcer needs to already be running so
-   a `NOTIFY ssdp:alive` lands inside that window:
+1. **Start the DHCP server**, if it isn't already running — confirmed necessary: the head unit is
+   a DHCP client (see "IP configuration" below), and won't get anywhere without something
+   answering its `DHCPDISCOVER`:
+   ```
+   sudo apt install -y dnsmasq   # once, if not already installed
+   sudo ./start_dhcp_server.sh
+   ```
+   Leave this running in its own shell.
+2. **Start the SSDP announcer, with a short interval, before triggering the attach**, if it isn't
+   already running. The head unit only appears to watch for our announcement in a window right
+   after it sees a fresh USB attach — the announcer needs to already be running so a `NOTIFY
+   ssdp:alive` lands inside that window:
    ```
    sudo python3 ssdp_announce.py --ip 192.168.42.1 --interval 3
    ```
-   Leave this running in its own shell. It only needs to be started once — it's fine to leave it
-   running across multiple `cycle_usb.sh` trials.
-2. **In a second shell, trigger the attach** (this is `cycle_usb.sh` from section A step 4 or
+   Leave this running in its own shell too. It only needs to be started once — it's fine to leave
+   it running across multiple `cycle_usb.sh` trials.
+3. **In a third shell, trigger the attach** (this is `cycle_usb.sh` from section A step 4 or
    section B step 1 above — already done if you just came from one of those).
-3. **Check the head unit's MirrorLink/HondaLink diagnostics screen.** A new dated entry should
-   appear with two events a few seconds apart: `Detected Device`, followed by `MirrorLink Status
-   (disconnected)`. This is the current confirmed result — the head unit does react to the
-   CDC-NCM attach, but the connection doesn't yet progress past this point (see "Known gaps"
-   below for what's still unresolved).
+4. **Check the head unit's MirrorLink/HondaLink diagnostics screen**, and watch the `[http]` log
+   in the `ssdp_announce.py` shell and the DHCP log in the `start_dhcp_server.sh` shell. As of the
+   last hardware trial (before the DHCP server existed), the diagnostics screen showed a new dated
+   entry with two events a few seconds apart — `Detected Device`, then `MirrorLink Status
+   (disconnected)` — and `tcpdump` showed the head unit repeatedly retrying `DHCPDISCOVER` with no
+   response. With a DHCP server now answering, the expected next result is the DHCP log showing a
+   lease handed out, followed by `[http]` showing a `GET /description.xml` (and hopefully further:
+   an SCPD fetch, a `SUBSCRIBE`, or a control action — see "Next test" below).
 
-If step 3 doesn't produce a new entry on the first try, just re-run `cycle_usb.sh` again without
-restarting the announcer — each cycle is one clean trial, and a miss on one trial doesn't mean
-the setup is wrong.
+If step 4 doesn't produce a new entry on the first try, just re-run `cycle_usb.sh` again without
+restarting the announcer or DHCP server — each cycle is one clean trial, and a miss on one trial
+doesn't mean the setup is wrong.
 
 **Does `cycle_usb.sh` bind the UDC itself?** Yes, in both directions. It reads the gadget's
 current `UDC` file: if something is already bound, it unbinds then rebinds to that same
@@ -135,6 +146,9 @@ yet).
   gadget's FunctionFS approach). Brings up a `usb0` network interface on the Pi.
 - `cycle_usb.sh` — soft-cycles the gadget's UDC binding (see "Why cycling instead of physically
   unplugging" below) and (re-)applies the Pi's IP/link-up state every time it runs.
+- `start_dhcp_server.sh` — a `dnsmasq`-based DHCP server scoped strictly to `usb0`, needed because
+  the head unit is a DHCP client on this link (confirmed via `tcpdump` — see "IP configuration"
+  below) and gets nowhere without something answering it.
 - `ssdp_announce.py` — once the NCM link has an IP address, this sends periodic UPnP `NOTIFY
   ssdp:alive` multicast announcements, serves a UPnP device description XML plus per-service SCPD
   (action list) XML over HTTP, handles SOAP `POST` control requests, and handles GENA
@@ -160,10 +174,13 @@ yet).
   is a plausible guess following standard UPnP naming convention, not a confirmed value. If the
   head unit's own `M-SEARCH` can be observed (e.g. via `tcpdump -i usb0` once the link is up), its
   `ST:` header would confirm the real value directly — do that before assuming this guess is wrong.
-- **IP addressing** (`192.168.42.1` for the Pi side) is a plausible guess based on
-  `192.168.42.0/24`/`169.254.x.x` address strings found in `vncdiscoverer-usb.dll`, not confirmed.
-  The head unit may expect to self-assign via a specific mechanism (static, link-local, or DHCP) —
-  not yet known which.
+- ~~IP addressing mechanism unknown~~ **Resolved.** Confirmed live via `tcpdump`: the head unit
+  sends repeated `BOOTP/DHCP Request` packets from MAC `02:00:00:00:00:02` (exactly the NCM
+  `host_addr` configured in `setup_ncm_gadget.sh`) — it's a DHCP client. `start_dhcp_server.sh`
+  now answers this. The Pi's own static `192.168.42.1/24` (the guess based on address strings in
+  `vncdiscoverer-usb.dll`) is kept as the DHCP server's gateway/subnet — still not independently
+  confirmed as the exact range the head unit expects, but at least now self-consistent, and the
+  head unit will get *some* working lease to test with either way.
 - **SCPD action arguments are unknown.** Actions are declared with zero arguments, which keeps
   the SCPD schema-valid but means any action requiring input (e.g. `LaunchApplication` almost
   certainly needs an app identifier) can't yet be answered meaningfully — the control handler logs
