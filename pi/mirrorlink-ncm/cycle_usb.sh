@@ -16,6 +16,9 @@ set -euo pipefail
 GADGET_NAME="${1:-ncm0}"
 GADGET_DIR="/sys/kernel/config/usb_gadget/${GADGET_NAME}"
 SETTLE_S="${2:-2}"
+IFNAME="usb0"
+PI_IP="192.168.42.1"
+PI_NETMASK="24"
 
 if [[ $EUID -ne 0 ]]; then
     echo "Must run as root" >&2
@@ -49,7 +52,21 @@ sleep "$SETTLE_S"
 echo "$CURRENT_UDC" > "$UDC_FILE"
 echo "  bound to $CURRENT_UDC (host should now see a fresh attach + re-enumeration)"
 
+# A UDC unbind/rebind is not guaranteed to preserve the IP address previously assigned to
+# the usb0 netdev (observed directly: this is what caused an EADDRNOTAVAIL failure in
+# ssdp_announce.py after an earlier cycle). Re-applying it unconditionally here removes that
+# ambiguity — this block is idempotent and safe to run whether or not the address survived.
+sleep 1
+if ip link show "$IFNAME" &>/dev/null; then
+    ip addr add "${PI_IP}/${PI_NETMASK}" dev "$IFNAME" 2>/dev/null || true
+    ip link set "$IFNAME" up
+    echo "  ${IFNAME}: ensured ${PI_IP}/${PI_NETMASK} is assigned and link is up"
+else
+    echo "  WARNING: ${IFNAME} does not exist yet — it may take a moment to appear, or the" >&2
+    echo "  gadget's ncm.usb0 function may not have bound correctly. Check 'ip link show'." >&2
+fi
+
 echo
 echo "Check state with:"
 echo "  cat /sys/class/udc/${CURRENT_UDC}/state"
-echo "  ip -d link show usb0"
+echo "  ip -d link show ${IFNAME}"
