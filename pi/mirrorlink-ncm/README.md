@@ -28,10 +28,17 @@ survive a reboot (configfs is in-memory only).
    sudo modprobe libcomposite   # only needed if setup_ncm_gadget.sh doesn't already do this
    sudo ./setup_ncm_gadget.sh
    ```
-   This builds the configfs gadget tree — `functions/ncm.usb0`, the config, the strings — but
-   does **not** bind it to a UDC and does **not** assign an IP address. Both of those now happen
-   automatically in the next step.
-4. **Bind the gadget and bring the link up** by running the cycle script once:
+   This builds the configfs gadget tree — `functions/ncm.usb0` **and** `functions/ffs.mlctrl`
+   (see "The MirrorLink USB command" below — required, not optional), the config, the strings —
+   but does **not** bind it to a UDC and does **not** assign an IP address.
+4. **Start the MirrorLink USB command listener** (must happen before binding — FunctionFS
+   requires its descriptors to be written to `ep0` first):
+   ```
+   sudo python3 mirrorlink_usb_cmd_listener.py /dev/ffs-mlctrl
+   ```
+   Leave this running in its own shell for the rest of the session — it stays open across UDC
+   cycles.
+5. **Bind the gadget and bring the link up** by running the cycle script once:
    ```
    sudo ./cycle_usb.sh
    ```
@@ -40,20 +47,25 @@ survive a reboot (configfs is in-memory only).
    unconditionally assigns `192.168.42.1/24` to `usb0` and brings the link up, so after this step
    both the USB binding and the IP configuration are done — you should never need to run a manual
    `ip addr add` / `ip link set up` yourself.
-5. Continue with the shared steps in **"Running a trial"** below.
+6. Continue with the shared steps in **"Running a trial"** below.
 
 ### B. Repeat trial, same boot session (gadget already exists)
 
 Needed every time you want to force a new detection event without a full reboot — e.g. after a
 "disconnected" result, to try again.
 
-1. Just re-run the cycle script — it re-does the unbind/rebind **and** re-applies the IP/link-up
-   step every time, so you don't need to check or restore IP state yourself even if a previous
-   cycle happened to wipe it:
+1. If `mirrorlink_usb_cmd_listener.py` isn't still running from before, start it first (same
+   ordering requirement as a fresh setup — it must have written its descriptors before any bind):
+   ```
+   sudo python3 mirrorlink_usb_cmd_listener.py /dev/ffs-mlctrl
+   ```
+2. Re-run the cycle script — it re-does the unbind/rebind **and** re-applies the IP/link-up step
+   every time, so you don't need to check or restore IP state yourself even if a previous cycle
+   happened to wipe it:
    ```
    sudo ./cycle_usb.sh
    ```
-2. Continue with **"Running a trial"** below (or skip straight to it if the announcer from a
+3. Continue with **"Running a trial"** below (or skip straight to it if the announcer from a
    previous trial is still running).
 
 ### Running a trial (shared by both cases above)
@@ -141,108 +153,118 @@ below.
 ## What's here
 
 - `setup_ncm_gadget.sh` — configfs setup for a USB CDC-NCM gadget (Linux's built-in `usb_f_ncm`
-  kernel function — no custom userspace daemon needed for the USB side itself, unlike the AOA
-  gadget's FunctionFS approach). Brings up a `usb0` network interface on the Pi.
+  kernel function) **plus** a second function, `ffs.mlctrl` (FunctionFS), that exists purely to
+  catch the "MirrorLink USB command" — see below. Brings up a `usb0` network interface on the Pi.
+- `mirrorlink_usb_cmd_listener.py` — watches `ffs.mlctrl`'s `ep0` and acknowledges (rather than
+  auto-stalling) the MirrorLink USB command. Must be started before the UDC is bound — see
+  Quickstart. See "The MirrorLink USB command" below for why this exists.
 - `cycle_usb.sh` — soft-cycles the gadget's UDC binding (see "Why cycling instead of physically
   unplugging" below) and (re-)applies the Pi's IP/link-up state every time it runs.
 - `start_dhcp_server.sh` — a `dnsmasq`-based DHCP server scoped strictly to `usb0`, needed because
   the head unit is a DHCP client on this link (confirmed via `tcpdump` — see "IP configuration"
   below) and gets nowhere without something answering it.
 - `ssdp_announce.py` — once the NCM link has an IP address, this sends periodic UPnP `NOTIFY
-  ssdp:alive` multicast announcements, serves a UPnP device description XML plus per-service SCPD
-  (action list) XML over HTTP, handles SOAP `POST` control requests, and handles GENA
-  `SUBSCRIBE`/`UNSUBSCRIBE` on `/eventSub`. Advertises two UPnP service types confirmed present as
-  literal strings in the head unit's own firmware — `urn:schemas-upnp-org:service:
-  TmApplicationServer:1` and `urn:schemas-upnp-org:service:TmClientProfile:1` ("Tm" = Terminal
-  Mode, the CCC framework MirrorLink is built on) — and implements enough of the standard UPnP
-  control/eventing surface (confirmed via firmware strings to be a CyberGarage/CyberLink C++ UPnP
-  stack: SOAP-over-HTTP with a `SOAPACTION` header, GENA eventing, and literal paths
-  `/description.xml` / `/eventSub`) to respond meaningfully rather than 404 to whatever the head
-  unit tries next. Action names on each service (`GetApplicationList`, `LaunchApplication`,
-  `GetApplicationCertificateInfo`, etc. on `TmApplicationServer`; `GetMaxNumProfiles`,
-  `GetClientProfile`, `SetClientProfile` on `TmClientProfile`) are inferred from internal C++
-  method names adjacent to the service-type strings in the firmware, not confirmed against a real
-  SCPD/WSDL — every control request is logged in full (path, SOAPACTION, body) regardless of
-  whether we recognize the action, specifically so a real invocation can be captured and the
-  actual argument list learned from what the head unit sends.
+  ssdp:alive` multicast announcements, serves a UPnP device description XML (including the real,
+  spec-confirmed `X_mirrorLinkVersion` element — see "Known gaps" below) plus per-service SCPD
+  XML over HTTP, handles SOAP `POST` control requests, and handles GENA `SUBSCRIBE`/`UNSUBSCRIBE`
+  on `/eventSub`. Action names and several argument lists (`LaunchApplication`, `SetClientProfile`,
+  `GetCertifiedApplicationsList`) are confirmed both by decompiling `MIrrorLink.exe` and
+  independently by the official ETSI TS 103 544 spec (parts 9/10/12, saved in
+  `references/cr-v/etsi_spec/`) — every control request is logged in full (path, SOAPACTION, body)
+  regardless of whether we recognize the action.
+
+## The MirrorLink USB command
+
+ETSI TS 103 544-1 clause 4.2.2 defines a specific USB control transfer, the "MirrorLink USB
+command", that the head unit (as USB host) sends to the device *before* it will trust a MirrorLink
+session over USB:
+```
+bmRequestType = 0x40   (host-to-device, vendor, device recipient)
+bRequest      = 0xF0
+wValue        = MirrorLink version (low byte major, high byte minor — e.g. 0x0101 for 1.1)
+wIndex        = USB host vendor ID
+wLength       = 0
+```
+Per spec: *"USB devices, not supporting MirrorLink USB command, will return STALL PID... If the
+MirrorLink Server is not able to switch to USB CDC/NCM functionality in response, the USB device
+shall respond with a STALL PID."* — and the head unit's own client-side logic for recognizing "an
+operating MirrorLink Server" explicitly requires condition 1: *"the command does not return with
+STALL PID"*. A bare `usb_f_ncm`-only gadget has nothing registered to claim this vendor request,
+so the kernel composite framework auto-STALLs it by default — meaning, until
+`mirrorlink_usb_cmd_listener.py` was added, **we were very likely failing this exact check on
+every single trial**, independent of and prior to anything at the IP/SSDP/HTTP layer. This was
+found by reading the actual spec after multiple XML-content fixes produced no change on hardware —
+see `references/cr-v/PROTOCOL_ANALYSIS.md` for the full trace.
 
 ## Known gaps / best-effort guesses that may need correcting
 
-- ~~Root device type URN unknown~~ **Resolved.** With the DHCP server running, the head unit
-  obtains a lease and then actively sends `M-SEARCH` with
-  `ST: urn:schemas-upnp-org:device:TmServerDevice:1` — not `TerminalModeDevice:1` as previously
-  guessed. `DEVICE_TYPE` in `ssdp_announce.py` has been corrected to the confirmed value, and our
-  `NOTIFY`/`M-SEARCH` responses should now actually match what the head unit is looking for.
-- ~~IP addressing mechanism unknown~~ **Resolved.** Confirmed live via `tcpdump`: the head unit
-  sends repeated `BOOTP/DHCP Request` packets from MAC `02:00:00:00:00:02` (exactly the NCM
-  `host_addr` configured in `setup_ncm_gadget.sh`) — it's a DHCP client. `start_dhcp_server.sh`
-  now answers this. The Pi's own static `192.168.42.1/24` (the guess based on address strings in
-  `vncdiscoverer-usb.dll`) is kept as the DHCP server's gateway/subnet — still not independently
-  confirmed as the exact range the head unit expects, but at least now self-consistent, and the
-  head unit will get *some* working lease to test with either way.
-- **SCPD action arguments are unknown.** Actions are declared with zero arguments, which keeps
-  the SCPD schema-valid but means any action requiring input (e.g. `LaunchApplication` almost
-  certainly needs an app identifier) can't yet be answered meaningfully — the control handler logs
-  the raw SOAP body of every invocation so real argument names/values can be read off a live
-  capture once the head unit actually calls one.
-- **The "MirrorLink USB command" precondition**: the spec text says the phone enables CDC/NCM and
-  starts advertising "when receiving the MirrorLink USB command" — it's not yet clear whether this
-  refers to something the head unit sends first (in which case our gadget may need to already be
-  listening for it before switching to NCM, similar to AOA's two-stage identity switch) or whether
-  simply presenting as CDC-NCM from first enumeration is sufficient to test. Starting simple
-  (advertise unconditionally) is the right first experiment; revisit if it's silently ignored.
+- ~~Root device type URN unknown~~ **Resolved.** Confirmed via the head unit's own `M-SEARCH`:
+  `ST: urn:schemas-upnp-org:device:TmServerDevice:1`.
+- ~~IP addressing mechanism unknown~~ **Resolved.** The head unit is a DHCP client (confirmed via
+  `tcpdump`); `start_dhcp_server.sh` answers it.
+- ~~SCPD is required for the head unit to proceed~~ **Resolved — this was never actually a
+  requirement.** ETSI TS 103 544-12: *"The MirrorLink Client MAY retrieve the MirrorLink Server's
+  service description [SCPD]; but all necessary information... are available in the Service
+  section of the device description."* SCPD-fetch is optional by spec — a compliant client is
+  expected to already know the standardized actions. Never seeing an SCPD request was correct,
+  expected behavior all along, not a bug.
+- ~~MirrorLink protocol version element unknown/guessed~~ **Resolved via the official spec**
+  (`references/cr-v/etsi_spec/ts_103544-12_UPnP_Server_Device.pdf`, Table 3 + literal example
+  XML): the real element is `X_mirrorLinkVersion`, a direct child of `<device>`, containing
+  `<majorVersion>`/`<minorVersion>` directly — no wrapper. Two earlier guesses (a fabricated
+  `<attributeList>`/`<attribute>` wrapper) were wrong; that shape actually belongs to a different,
+  Deprecated feature (`X_deviceKeys`/`key`) that happens to share the same parsing function in the
+  decompiled binary, which is what caused the confusion.
+- **The MirrorLink USB command (see above) — implemented, untested on hardware.**
+  `mirrorlink_usb_cmd_listener.py` is new and has not yet been validated against a real head unit.
+  Watch its console output during the next trial for a `*** MirrorLink USB command received ***`
+  line — if it never appears, either the head unit doesn't send this request over this bearer in
+  practice (possible — not every implementation follows every clause), or something about the
+  hybrid `ncm.usb0` + `ffs.mlctrl` composite isn't routing the request to us correctly (e.g. the
+  `FUNCTIONFS_ALL_CTRL_RECIP` flag not having the intended effect in practice) and needs debugging.
+- **X_Signature** (an RSA-SHA1 XML signature over the device description, tied to attestation) is
+  listed as Mandatory in the spec's attribute table, but annotated as introduced in later
+  MirrorLink versions (1.2/1.3) alongside `X_presentations`/`X_localization`/`X_mlUiMode`. Since
+  this firmware only knows about `ml-1-0`/`ml-1-1`, it's plausible not enforced here — not
+  implemented, not yet confirmed either way.
 
-## Next test: does the head unit fetch SCPD / invoke a control action now?
+## Next test: does the MirrorLink USB command get received now?
 
-**Confirmed so far**: with the corrected `DEVICE_TYPE` and a working DHCP lease, the head unit
-does `GET /description.xml` (200) once, then starts its own periodic `M-SEARCH` (which we now
-answer correctly) — but in a ~20s trial it didn't go further, and the diagnostics screen stayed at
-`Assigned IP address`. `ssdp_announce.py` now also serves `<URLBase>` in the description (a real,
-confirmed-via-firmware-string element we were previously missing), which may or may not matter.
+**State before this round**: with the corrected `DEVICE_TYPE`, working DHCP, and the real
+`X_mirrorLinkVersion` element (validated well-formed against an independent UPnP library,
+`upnpclient`, with zero errors), the head unit still only did `GET /description.xml` once and
+never progressed further — no SCPD fetch (now known to be expected — see "Known gaps"), no
+`SUBSCRIBE`, no control action. Diagnostics stayed at `Assigned IP address` (an improvement over
+earlier trials, which showed an explicit `MirrorLink Status (disconnected)` rejection — no
+rejection this time suggests progress, just a stall further in).
 
-A follow-up trial with Bluetooth paired at the same time produced the identical two diagnostics
-events and, notably, **no `GET /description.xml` at all this time** — because `DEVICE_UUID` was
-previously fixed across runs, the head unit may have simply recognized us as an already-known
-device from the earlier trial and skipped re-fetching, which would make that absence a caching
-artifact rather than a new negative result for the Bluetooth-correlation theory. `DEVICE_UUID` is
-now randomized by default on every run specifically to rule this out — each trial now presents as
-a genuinely new device, so a fresh `GET /description.xml` should occur every time regardless of
-what happened in a previous trial (pass `--fixed-uuid` to opt back into the old deterministic
-behavior if that's ever useful).
+Reading ETSI TS 103 544-1 directly resolved why: the head unit is expected to send a specific USB
+control transfer — the "MirrorLink USB command" — before it will trust the session, and our
+gadget had nothing to receive it (see "The MirrorLink USB command" above). This is now
+implemented in `mirrorlink_usb_cmd_listener.py`, untested on hardware as of this writing.
 
-For the next trial:
+For the next trial, the ordering from the Quickstart matters — `mirrorlink_usb_cmd_listener.py`
+must be running *before* `cycle_usb.sh` binds the UDC. Then:
 
-1. **Let it run longer — don't `Ctrl+C` early.** 20s may just not have been enough time; a real
-   UPnP control point can have multiple internal timeouts/retries before either progressing or
-   giving up. Leave a trial running for at least 60-90s and watch both the console and the
-   diagnostics screen the whole time.
-2. **Optionally, pair Bluetooth at the same time** (`pi/bluetooth-test/`, either plain pairing or
-   the full HFP setup) before triggering the CDC-NCM/SSDP trial. New firmware evidence found a
-   `<bdAddr>` (Bluetooth address) field in what looks like session/connection data — it's possible
-   the head unit needs to correlate this UPnP session with an already Bluetooth-paired device to
-   let it proceed past initial detection, even though Bluetooth wasn't required to get *that* far.
-3. Read the `[http]` console log, which shows every HTTP request received, in order — this alone
-   answers several open questions, no `tcpdump` required:
-   - **Still nothing beyond `GET /description.xml`** — even with the `URLBase` fix and more time,
-     this would suggest the head unit is evaluating the description content and rejecting/ignoring
-     it (missing element, wrong value) rather than just not having gotten there yet. Next step
-     would be a `tcpdump -A` capture of the exact bytes on both sides of that GET to check for
-     anything we're not accounting for.
-   - **`GET /scpd_TmApplicationServer.xml` and/or `GET /scpd_TmClientProfile.xml` appear**, logged
-     with `"SCPD fetched for service ..."` — confirms it's progressing normally through
-     description → SCPD. Watch what happens right after.
-   - **`SUBSCRIBE /eventSub` appears** — confirms GENA eventing is part of the flow.
-   - **`POST /control_<service>` appears with a `SOAPACTION`** — the actual goal: read the logged
-     action name and full SOAP body. Given the firmware's `attestationRequest` template
-     (`trustRoot`/`nonce`/`componentID`) and the `GetApplicationCertificateInfo` action name, a
-     certificate/attestation exchange as the very first invoked action would not be surprising —
-     if so, that ties this layer directly into the Phase 3 pairing/certificate risk already
-     flagged in `PROJECT_PLAN.md`, and would mean genuine CCC-issued credentials are likely needed
-     here too, not only at the RFB layer.
-
-Whatever the result, it narrows the search meaningfully — report back the full `[http]` log
-(from a longer trial, with or without Bluetooth paired) and we'll know which of the remaining
-unknowns to chase next.
+1. Watch the **listener's own console** first, above everything else — this is the most direct
+   signal now. Look for:
+   ```
+   [mlctrl] *** MirrorLink USB command received *** requested version X.Y, host vendorID=0x....
+   ```
+   - **If this line appears**: real confirmation the head unit does send this command over USB and
+     we're now acknowledging it instead of stalling. Check immediately after whether the
+     diagnostics screen progresses past `Assigned IP address`, and whether `ssdp_announce.py`'s
+     `[http]` log shows any new activity (a repeat `GET /description.xml`, or — the real goal — a
+     `SUBSCRIBE`/`POST` with a `SOAPACTION`, ideally `SetClientProfile` first per
+     ETSI TS 103 544-13's session-setup sequence).
+   - **If it never appears**: either this head unit doesn't send the command in practice over this
+     bearer, or the hybrid `ncm.usb0` + `ffs.mlctrl` composite isn't routing the request to us the
+     way intended (worth checking `[mlctrl] event: BIND`/`ENABLE` lines appear at all, confirming
+     the FunctionFS side of the gadget is alive; if even those are missing, the composite may not
+     be enumerating both functions correctly and needs its own debugging pass).
+2. Regardless of the listener's result, still watch `ssdp_announce.py`'s `[http]` log and the
+   diagnostics screen as before — report back all three (listener console, `[http]` log,
+   diagnostics screen state) so we know precisely which layer to chase next.
 
 ## Why cycling instead of physically unplugging
 
