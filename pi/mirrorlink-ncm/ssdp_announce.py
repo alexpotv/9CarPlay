@@ -40,6 +40,7 @@ import sys
 import threading
 import time
 import uuid
+from xml.sax.saxutils import escape as xml_escape
 
 SSDP_ADDR = "239.255.255.250"
 SSDP_PORT = 1900
@@ -211,6 +212,45 @@ SOAP_RESPONSE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 # output argument (none found as a literal string) so it's left with a generic placeholder.
 # If the head unit rejects one of these with a SOAP fault (UPnPError), that fault body itself is
 # useful diagnostic information — it's logged in full either way via the POST handler.
+# ETSI TS 103 544-9 clause 5.2.5: "If the MirrorLink Server supports the Device Attestation
+# Protocol, it shall include the Device Attestation Protocol Server as an application within
+# A_ARG_TYPE_AppList... <protocolId> shall be "DAP". <appCategory> shall be "0xF0000001"." Before
+# this existed, GetApplicationList always returned an empty ApplicationList, which is exactly why
+# the head unit's diagnostics screen showed "MirrorLink Status (no DAP server)" — it never got as
+# far as LaunchApplication. appID/name/format values are taken directly from the spec's own
+# worked example in clause 5.5.4.
+#
+# The A_ARG_TYPE_AppList XSD (clause 6.2) marks <Signature> as minOccurs="1" on <appList> itself —
+# mandatory, not optional, same situation as X_SIGNATURE_XML above. We have no real DAP-issued
+# signing key, so this is the same kind of syntactically well-formed but cryptographically
+# meaningless placeholder, with Reference URI="#mlServerAppList" pointing at the appList's own
+# xml:id per clause 5.6.
+DAP_APP_LIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<appList xml:id="mlServerAppList" xmlns="urn:schemas-upnp-org:tmapplicationserver:applist-1-0">
+  <app>
+    <appID>0x9016</appID>
+    <name>Device Attestation</name>
+    <remotingInfo>
+      <protocolID>DAP</protocolID>
+      <format>1.1</format>
+    </remotingInfo>
+  </app>
+  <Signature Id="AppListSignature" xmlns="http://www.w3.org/2000/09/xmldsig#">
+    <SignedInfo>
+      <CanonicalizationMethod Algorithm="http://www.w3.org/2006/12/xml-c14n11"/>
+      <SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/>
+      <Reference URI="#mlServerAppList">
+        <Transforms>
+          <Transform Algorithm="http://www.w3.org/2006/12/xml-c14n11"/>
+        </Transforms>
+        <DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>
+        <DigestValue>bm90LWEtcmVhbC1zaWduYXR1cmU=</DigestValue>
+      </Reference>
+    </SignedInfo>
+    <SignatureValue>bm90LWEtcmVhbC1zaWduYXR1cmU=</SignatureValue>
+  </Signature>
+</appList>"""
+
 _CLIENT_PROFILE_XML = (
     "&lt;modelNumber&gt;0.1&lt;/modelNumber&gt;"
     "&lt;modelName&gt;MirrorLink NCM Bridge (dev)&lt;/modelName&gt;"
@@ -219,7 +259,9 @@ _CLIENT_PROFILE_XML = (
     "&lt;clientID&gt;9carplay-001&lt;/clientID&gt;"
 )
 ACTION_RESPONSE_BODIES = {
-    "GetApplicationList": "<ApplicationList></ApplicationList>",
+    # Escaped, since ApplicationList's value is itself a full XML document embedded as text
+    # content of the SOAP response element (same embedding shape as ClientProfile below).
+    "GetApplicationList": f"<ApplicationList>{xml_escape(DAP_APP_LIST_XML)}</ApplicationList>",
     "GetApplicationStatus": "<ApplicationStatus></ApplicationStatus>",
     "LaunchApplication": "<Result>0</Result>",
     "TerminateApplication": "<Result>0</Result>",
