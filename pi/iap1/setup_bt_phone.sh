@@ -1,4 +1,4 @@
-#!/bin/bash
+d#!/bin/bash
 # Configures the Pi's onboard Bluetooth radio as a phone-class device and gets it ready to accept
 # an HFP (Hands-Free Profile) connection from the head unit — a confirmed PRECONDITION for the
 # legacy iAP1 HondaLink path, not just a guess. See references/cr-v/iap.md, "Bluetooth gating
@@ -58,7 +58,7 @@ btmgmt pairable on
 # head unit's own pairing menu needs time to be reached and used manually). The old
 # `btmgmt discoverable on` form used in earlier scripts in this repo (pi/bluetooth-test/) errors
 # with "Invalid command in menu mgmt: discoverable" on current BlueZ — confirmed on real hardware.
-btmgmt discov yes 0
+btmgmt discoverable on
 
 echo
 echo "Bluetooth adapter is phone-class (0x5A020C), discoverable, and pairable as"

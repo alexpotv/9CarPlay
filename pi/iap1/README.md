@@ -100,7 +100,7 @@ Same as `pi/aoa-gadget/` and `pi/mirrorlink-ncm/`:
    above):
    ```
    cd pi/iap1
-   
+   sudo ./setup_bt_phone.sh
    sudo python3 ../bluetooth-test/hfp_ag.py
    ```
    Then pair from the **head unit's own** Bluetooth "add device" menu (not from the Pi — this is
