@@ -51,7 +51,10 @@ systemctl restart bluetooth
 rfkill unblock bluetooth
 btmgmt power on
 btmgmt pairable on
-btmgmt discoverable on
+# Modern btmgmt renamed "discoverable" to "discov" (yes/no/limited + optional timeout in seconds,
+# 0 = no timeout) — the old form here errored with "Invalid command in menu mgmt: discoverable" on
+# current BlueZ, confirmed on real hardware. See pi/iap1/setup_bt_phone.sh for the same fix.
+btmgmt discov yes 0
 
 echo
 echo "Class of Device set persistently to 0x5A020C (Phone/Smartphone) in"

@@ -37,7 +37,10 @@ btmgmt class 0x02 0x03
 btmgmt name "9CarPlay AOA Bridge"
 btmgmt power on
 btmgmt pairable on
-btmgmt discoverable on
+# Modern btmgmt renamed "discoverable" to "discov" (yes/no/limited + optional timeout in seconds,
+# 0 = no timeout) — the old form here errored with "Invalid command in menu mgmt: discoverable" on
+# current BlueZ, confirmed on real hardware. See pi/iap1/setup_bt_phone.sh for the same fix.
+btmgmt discov yes 0
 
 echo
 echo "Bluetooth adapter is now discoverable and pairable as a Phone-class"
