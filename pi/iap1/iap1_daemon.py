@@ -45,6 +45,7 @@ Usage (on the Pi, after setup_gadget.sh, BEFORE binding the UDC):
     sudo python3 iap1_daemon.py /dev/ffs-iap1
 """
 
+import errno
 import os
 import select
 import struct
@@ -158,7 +159,18 @@ def build_endpoint_descriptor(addr: int, max_packet: int) -> bytes:
 def build_interface_descriptor() -> bytes:
     # bLength, bDescriptorType, bInterfaceNumber, bAlternateSetting, bNumEndpoints,
     # bInterfaceClass, bInterfaceSubClass, bInterfaceProtocol, iInterface
-    return struct.pack("<BBBBBBBBB", 9, USB_DT_INTERFACE, 0, 0, 2, 0xFF, 0xFF, 0xFF, 1)
+    #
+    # bInterfaceClass 0xFF (vendor-specific) is unavoidably a guess. bInterfaceSubClass/Protocol
+    # were originally 0xFF/0xFF (fully generic, matching the same starting point pi/aoa-gadget/
+    # used) — updated to 0xFE/0x02 instead, which is NOT a guess: it's the publicly documented
+    # (non-NDA) interface identity real iPhones present for their USB "usbmux" multiplexing
+    # interface (the channel iAP/iTunes-sync/etc. are carried over), per libimobiledevice/usbmuxd's
+    # own published USB device-matching rules and the Linux `ipheth` driver source, both of which
+    # match on idVendor=0x05ac + interface class/subclass/protocol 0xFF/0xFE/0x02. If the head
+    # unit's USB stack is filtering candidate "phone" interfaces by these bytes (plausible, given
+    # BIND/ENABLE completes but nothing above that engages — see iap.md/README "Known gaps"), this
+    # is a strictly better-informed guess than the fully generic one it replaces.
+    return struct.pack("<BBBBBBBBB", 9, USB_DT_INTERFACE, 0, 0, 2, 0xFF, 0xFE, 0x02, 1)
 
 
 def build_descriptors() -> bytes:
@@ -275,10 +287,14 @@ def handle_setup(ep0_fd, req_bytes: bytes):
 
 
 def ep0_event_loop(ep0_fd):
+    """Returns (running, enabled) — enabled is True if a FUNCTIONFS_ENABLE event was seen in this
+    batch, signaling the caller should (re)open the bulk endpoints (see open_bulk_eps/main).
+    """
     data = os.read(ep0_fd, 12 * 8)
     if not data:
         print("[ep0] closed, exiting")
-        return False
+        return False, False
+    enabled = False
     for i in range(0, len(data) - 11, 12):
         raw = data[i:i + 8]
         ev_type = data[i + 8]
@@ -290,7 +306,8 @@ def ep0_event_loop(ep0_fd):
             if ev_type == FUNCTIONFS_ENABLE:
                 print("[event] gadget ENABLEd by head unit — enumeration complete, watching "
                       "bulk OUT for iAP1 traffic now.")
-    return True
+                enabled = True
+    return True, enabled
 
 
 def process_rx(state: State, ep_in_fd):
@@ -341,6 +358,26 @@ def process_rx(state: State, ep_in_fd):
         # else: need more data, wait for next read
 
 
+def open_bulk_eps(mount, old_out=None, old_in=None):
+    """(Re)opens the bulk OUT/IN endpoint files. FunctionFS invalidates the previously-open ep1/
+    ep2 file descriptors across a UDC unbind/rebind cycle (a soft disconnect/reconnect, e.g. via
+    cycle_usb.sh) — attempting to read a stale fd afterward fails permanently with ESHUTDOWN
+    ("Cannot send after transport endpoint shutdown"), even once the gadget re-enumerates and a
+    fresh FUNCTIONFS_ENABLE event arrives on ep0. There is no way to "revive" the old fd; the fix
+    is to close it and open the (same-path, but kernel-side-fresh) endpoint files again. Called
+    both right after a FUNCTIONFS_ENABLE event (the normal case) and as a fallback if a read ever
+    hits ESHUTDOWN/ENODEV directly (belt-and-suspenders against event/read ordering)."""
+    for fd in (old_out, old_in):
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    new_out = os.open(os.path.join(mount, "ep1"), os.O_RDONLY | os.O_NONBLOCK)
+    new_in = os.open(os.path.join(mount, "ep2"), os.O_WRONLY)
+    return new_out, new_in
+
+
 def main():
     if len(sys.argv) != 2:
         print(f"usage: {sys.argv[0]} <functionfs-mountpoint>   (e.g. /dev/ffs-iap1)",
@@ -358,8 +395,7 @@ def main():
     n = os.write(ep0_fd, build_strings())
     print(f"wrote {n} bytes of strings to ep0")
 
-    ep_out_fd = os.open(os.path.join(mount, "ep1"), os.O_RDONLY | os.O_NONBLOCK)
-    ep_in_fd = os.open(os.path.join(mount, "ep2"), os.O_WRONLY)
+    ep_out_fd, ep_in_fd = open_bulk_eps(mount)
 
     print("Descriptors written and all endpoints opened.")
     print("Now bind the UDC in another shell to start enumeration (or use cycle_usb.sh):")
@@ -384,7 +420,17 @@ def main():
         events = poller.poll(500)
         for fd, ev in events:
             if fd == ep0_fd and (ev & select.POLLIN):
-                running = ep0_event_loop(ep0_fd)
+                running, enabled = ep0_event_loop(ep0_fd)
+                if enabled:
+                    # The previously-open bulk fds are about to be (or already are) invalid —
+                    # see open_bulk_eps' docstring. Re-register nothing here since ep_out is
+                    # polled by direct non-blocking read below, not via `poller`.
+                    print("[bulk] reopening ep1/ep2 after ENABLE (old fds are invalid post-cycle)")
+                    try:
+                        ep_out_fd, ep_in_fd = open_bulk_eps(mount, ep_out_fd, ep_in_fd)
+                    except OSError as reopen_err:
+                        print(f"[bulk] reopen after ENABLE failed: {reopen_err} — will fall "
+                              "back to reopening on the next read error", file=sys.stderr)
 
         try:
             chunk = os.read(ep_out_fd, 16384)
@@ -395,6 +441,15 @@ def main():
             pass
         except OSError as e:
             print(f"[ep_out] read error: {e}", file=sys.stderr)
+            if e.errno in (errno.ESHUTDOWN, errno.ENODEV):
+                print("[bulk] endpoint shut down — reopening ep1/ep2 as a fallback "
+                      "(normally the ENABLE-triggered reopen above should have already done "
+                      "this; seeing this message means that ordering didn't happen)")
+                try:
+                    ep_out_fd, ep_in_fd = open_bulk_eps(mount, ep_out_fd, ep_in_fd)
+                except OSError as reopen_err:
+                    print(f"[bulk] reopen failed: {reopen_err} — will keep retrying",
+                          file=sys.stderr)
 
     state.capture_fp.close()
     state.unclassified_fp.close()

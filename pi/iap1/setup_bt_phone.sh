@@ -58,7 +58,7 @@ btmgmt pairable on
 # head unit's own pairing menu needs time to be reached and used manually). The old
 # `btmgmt discoverable on` form used in earlier scripts in this repo (pi/bluetooth-test/) errors
 # with "Invalid command in menu mgmt: discoverable" on current BlueZ — confirmed on real hardware.
-btmgmt discoverable on
+btmgmt discov yes 0
 
 echo
 echo "Bluetooth adapter is phone-class (0x5A020C), discoverable, and pairable as"

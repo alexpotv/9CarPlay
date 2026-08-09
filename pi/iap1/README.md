@@ -154,6 +154,27 @@ Same as `pi/aoa-gadget/` and `pi/mirrorlink-ncm/`:
    `iap1_unclassified.bin`. That combination is what determines the next iteration — exactly the
    same iterative loop `pi/aoa-gadget/` and `pi/mirrorlink-ncm/` went through.
 
+## Fixed since the first hardware trial
+
+- **Bulk endpoints going permanently dead after a `cycle_usb.sh` UDC unbind/rebind.** First live
+  trial showed `ENABLE` firing correctly on each re-enumeration, but a
+  `[ep_out] read error: [Errno 108] Cannot send after transport endpoint shutdown` right after the
+  first cycle — the previously-opened `ep1`/`ep2` file descriptors are invalidated by a UDC
+  unbind and don't come back on their own once the gadget re-enumerates, and the daemon was only
+  ever opening them once at startup. Fixed: `iap1_daemon.py` now reopens `ep1`/`ep2`
+  (`open_bulk_eps()`) right after every `FUNCTIONFS_ENABLE` event, with an `ESHUTDOWN`/`ENODEV`
+  read-error fallback in case that ordering is ever missed. If you were seeing `ENABLE` fire with
+  no bulk traffic ever recognized afterward on a *second or later* cycle, this was why — traffic
+  may have been arriving but landing on a dead fd, not actually absent.
+- **Interface class/subclass/protocol bytes** — the vendor interface was originally fully generic
+  (`0xFF`/`0xFF`/`0xFF`, the same starting point `pi/aoa-gadget/` used). Updated to `0xFF`/`0xFE`/
+  `0x02` — not a new guess, but the publicly documented (non-NDA) identity real iPhones present for
+  their USB "usbmux" interface, per libimobiledevice/usbmuxd's own published device-matching rules
+  and the Linux `ipheth` driver source. Worth a fresh trial to see if this changes anything, given
+  the first trial got `BIND`/`ENABLE` with no higher-layer engagement — the same "enumerates but
+  nothing above that layer cares" pattern `pi/aoa-gadget/` hit before its own interface-identity
+  fix.
+
 ## Known gaps (likely first things to revise after a live trial)
 
 - Exact iAP1 command ID numbering is a best-effort guess (see "Confidence levels").
