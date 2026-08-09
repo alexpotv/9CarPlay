@@ -673,6 +673,18 @@ def msearch_responder(ip, port, iface):
             print(f"[ssdp] -> M-SEARCH reply to {addr}:\n{reply.decode('ascii')}")
 
 
+DAP_ATTESTATION_RESPONSE_XML = (
+    b'<?xml version="1.0" encoding="UTF-8"?>'
+    b'<attestationResponse xmlns="urn:schemas-upnp-org:dapserver">'
+    b"  <version>"
+    b"    <majorVersion>1</majorVersion>"
+    b"    <minorVersion>1</minorVersion>"
+    b"  </version>"
+    b"  <result>3</result>"
+    b"</attestationResponse>"
+)
+
+
 def dap_listener(ip, port):
     """Raw TCP listener for the Device Attestation Protocol endpoint advertised via
     LaunchApplication's AppURI (see build_launch_application_body() above).
@@ -683,9 +695,11 @@ def dap_listener(ip, port):
     that vncviewersdk.dll/MIrrorLink.exe implement DAP, not the byte-level protocol. So this
     listener's job is purely diagnostic: accept the connection, log every byte the head unit
     sends (hex + best-effort UTF-8 decode, same style as the USB command listener and the 404
-    POST logging elsewhere in this file), and see what we're actually dealing with. It sends
-    nothing back — this is intentional, so the FIRST bytes we ever see are unambiguously the head
-    unit's, not a reaction to anything we guessed at.
+    POST logging elsewhere in this file), and see what we're actually dealing with.
+
+    It now replies to each request with DAP_ATTESTATION_RESPONSE_XML — a placeholder
+    attestationResponse (result=3) — so we can observe how the head unit reacts to a well-formed
+    but unverified response, and logs that reply alongside the request that triggered it.
     """
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -709,6 +723,10 @@ def dap_listener(ip, port):
                         print(f"[dap] <- {len(chunk)} bytes from {addr}:\n"
                               f"  hex:  {chunk.hex()}\n"
                               f"  text: {chunk.decode('utf-8', 'replace')!r}")
+                        conn.sendall(DAP_ATTESTATION_RESPONSE_XML)
+                        print(f"[dap] -> {len(DAP_ATTESTATION_RESPONSE_XML)} bytes to {addr}:\n"
+                              f"  hex:  {DAP_ATTESTATION_RESPONSE_XML.hex()}\n"
+                              f"  text: {DAP_ATTESTATION_RESPONSE_XML.decode('utf-8')!r}")
                 except socket.timeout:
                     print(f"[dap] {addr} idle for 30s, closing")
                 except (ConnectionResetError, BrokenPipeError) as exc:
