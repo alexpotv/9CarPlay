@@ -10,12 +10,13 @@ evidence this scaffold is based on.
 
 ## What this does and doesn't attempt
 
-Per the user's request, this is deliberately light and generic — enough to exercise four things,
+Per the user's request, this is deliberately light and generic — enough to exercise five things,
 no more:
 
 | Goal | Status |
 |---|---|
 | Pi is detected as a phone-like USB device | Implemented (best-effort) — Apple VID + plausible iPhone PID, vendor-class FunctionFS interface |
+| Bluetooth HFP connection (confirmed precondition) | Implemented — `setup_bt_phone.sh` + reused `pi/bluetooth-test/hfp_ag.py` |
 | Basic iAP1 identify handshake | Implemented (best-effort) — see "Confidence levels" below |
 | Head unit lists available apps | Speculative placeholder only — see "Confidence levels"; the real wire mechanism for `SetServerVRAppData` is unresolved |
 | AV via HDMI | Implemented, trivially — `hdmi_testpattern.sh`, no protocol needed per RE finding |
@@ -26,6 +27,15 @@ head unit demands genuine MFi authentication before reaching the identify layer 
 speaks, expect the connection to stall there. Finding out exactly where it stalls is the point of
 this test, the same way `pi/aoa-gadget/` and `pi/mirrorlink-ncm/` each characterized exactly how
 far their respective bearers got before hitting a wall.
+
+**Bluetooth is a confirmed precondition, not optional, for this path.** Decompiling
+`Communication.exe`'s `isIPhoneConnected()` found a hard gate: it requires either (a) a Bluetooth
+HFP connection flag AND the USB iAP flag both set, or (b) the currently BT-connected device's
+address matching one already on file. See `iap.md`, "Bluetooth gating confirmed by decompilation",
+and run `setup_bt_phone.sh` (below) **before** — or at least concurrently with — testing the USB
+side. This is a different, confirmed-positive finding from the earlier BT-gating *theory* in
+`pi/bluetooth-test/`, which tested negative for the separate (and since-superseded) MirrorLink/AOA
+path — don't conflate the two; this one has decompiled code backing it, specific to this path.
 
 ## Confidence levels (read this before interpreting test results)
 
@@ -77,30 +87,48 @@ Same as `pi/aoa-gadget/` and `pi/mirrorlink-ncm/`:
   the USB daemon (per RE, HDMI carries a plain mirrored framebuffer with no protocol coupling to
   the USB/iAP session — see `PROTOCOL_ANALYSIS.md`, "HDMI side: no protocol-specific negotiation
   found").
+- `setup_bt_phone.sh` — configures the Pi's Bluetooth radio as a phone-class device
+  (discoverable/pairable, Class of Device 0x5A020C), a confirmed precondition for this path (see
+  above and `iap.md`). Does not implement HFP itself — pairs with `pi/bluetooth-test/hfp_ag.py`
+  (reused directly, not duplicated) for the actual Hands-Free Profile Audio Gateway role.
 
 ## Quickstart
 
 1. Tear down any other active gadget (AOA/CDC-NCM) first if this isn't a fresh boot.
-2. On the Pi, before connecting to the head unit:
+2. **Bluetooth first** — get a stable HFP connection established before spending time on the USB
+   side, since `isIPhoneConnected()` requires it (see "Bluetooth is a confirmed precondition"
+   above):
    ```
    cd pi/iap1
+   sudo ./setup_bt_phone.sh
+   sudo python3 ../bluetooth-test/hfp_ag.py
+   ```
+   Then pair from the **head unit's own** Bluetooth "add device" menu (not from the Pi — this is
+   also how the head unit learns/records this Pi's BD address as "the accessory," per
+   `OnBluetoothStatusEvent`'s `AccessoryMacAddress Non` check in `iap.md`). Confirm a stable HFP
+   Service Level Connection (watch `hfp_ag.py`'s console and the head unit's phone icon) — not
+   just "paired" — before moving on. See `setup_bt_phone.sh`'s own printed instructions and
+   `pi/bluetooth-test/README.md` "Phase A"/"Phase B" for troubleshooting connect/disconnect
+   flapping.
+3. On the Pi, before connecting to the head unit's USB port:
+   ```
    sudo ./setup_gadget.sh
    sudo python3 iap1_daemon.py /dev/ffs-iap1
    ```
    Wait for "Descriptors written and all endpoints opened" before binding.
-3. In a second shell, bind the UDC (or use the cycle script, which auto-detects an unbound gadget
+4. In a second shell, bind the UDC (or use the cycle script, which auto-detects an unbound gadget
    and does a fresh bind):
    ```
    sudo ./cycle_usb.sh
    ```
-4. Connect (or leave connected) to the head unit's USB port, and select whatever source triggers
+5. Connect (or leave connected) to the head unit's USB port, and select whatever source triggers
    its HondaLink/phone-app UI.
-5. In a third shell (or on an HDMI-connected monitor), start the visible test pattern so you can
+6. In a third shell (or on an HDMI-connected monitor), start the visible test pattern so you can
    independently confirm the AV leg:
    ```
    sudo ./hdmi_testpattern.sh
    ```
-6. Watch `iap1_daemon.py`'s console. Useful outcomes, weakest to strongest signal (mirrors the
+7. Watch `iap1_daemon.py`'s console. Useful outcomes, weakest to strongest signal (mirrors the
    pattern used in `pi/aoa-gadget/README.md`):
    - Nothing at all / no `[event] ENABLE` — the head unit isn't probing this port the way we
      expect, or the descriptors are wrong.
@@ -117,10 +145,10 @@ Same as `pi/aoa-gadget/` and `pi/mirrorlink-ncm/`:
      shows something beyond generic "device attached" (a device name, a phone icon, an app list,
      anything HondaLink-specific) — this would be the real milestone: confirmation the identify
      layer is far enough along to matter, and a concrete signal for what to fix next.
-7. Whatever happens, tap the head unit's own touchscreen a few times while connected, then check
+8. Whatever happens, tap the head unit's own touchscreen a few times while connected, then check
    `iap1_unclassified.bin` (timestamps + hex) for anything that showed up in that window — this is
    the touch-discovery methodology described above.
-8. Report back (or update `iap.md`/`PROJECT_PLAN.md`) with: did `ENABLE` fire, did any `[setup]`
+9. Report back (or update `iap.md`/`PROJECT_PLAN.md`) with: did `ENABLE` fire, did any `[setup]`
    vendor requests show up, did any `[rx]` packets show up, what (if anything) changed on the head
    unit's own screen, and whether tapping the screen produced anything in
    `iap1_unclassified.bin`. That combination is what determines the next iteration — exactly the
@@ -138,3 +166,10 @@ Same as `pi/aoa-gadget/` and `pi/mirrorlink-ncm/`:
   which is a separate, harder problem (see `iap.md`).
 - `wMaxPacketSize`/`bInterval` values are reasonable defaults, not verified against what the head
   unit actually expects for this interface.
+- The BD-address "accessory" registration flow (does the head unit need to learn the Pi's MAC via
+  its own pairing menu specifically, versus accepting any currently-connected HFP device — see
+  `iap.md`) is inferred from decompiled logic, not yet confirmed against live pairing behavior.
+- Whether the head unit's `isIPhoneConnected()` USB-iAP flag (`+0x78`, per `iap.md`) is satisfied
+  merely by USB enumeration/`ENABLE`, or requires the identify handshake to actually complete, is
+  unconfirmed — worth watching whether BT alone (HFP connected, USB not yet attempted) already
+  changes anything on the head unit's screen.
