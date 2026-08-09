@@ -1,4 +1,4 @@
-d#!/bin/bash
+#!/bin/bash
 # Configures the Pi's onboard Bluetooth radio as a phone-class device and gets it ready to accept
 # an HFP (Hands-Free Profile) connection from the head unit — a confirmed PRECONDITION for the
 # legacy iAP1 HondaLink path, not just a guess. See references/cr-v/iap.md, "Bluetooth gating
