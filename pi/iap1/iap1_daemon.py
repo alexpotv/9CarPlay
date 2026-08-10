@@ -1,45 +1,48 @@
 #!/usr/bin/env python3
 """iap1_daemon — legacy iAP1 "HondaLink phone" scaffold over a Linux FunctionFS USB gadget.
 
-Implements the Gate 2 (app whitelist) plan from references/cr-v/iap.md: since full decompilation
-of Communication.exe's `SetServerVRAppData`/`IsAuthInfoAllExist`/`CheckAuthInfo` found NO local
-whitelist database and NO content comparison anywhere in that path — only a presence/completeness
-check across six identity fields — satisfying it is a data-shape problem, not a cryptographic one.
-This daemon supplies plausible, well-formed values for those fields (see apps.py) over a generic
-iAP1-shaped USB link, so a live trial against the real head unit can observe how far the connection
-gets. Gate 1 (device attestation, MFi) is a SEPARATE, still-unresolved question (iap.md, "Open
-risks" #2) — if the head unit demands genuine MFi authentication before this layer is even reached,
-this scaffold is expected to stall there. That's the boundary this test is designed to find.
+Implements the real IDPS (Identify Device Preferences and Settings) + MFi device-authentication
+handshake, verified 2026-08-10 against Apple's actual public "iPod Accessory Protocol Interface
+Specification" (Release R38, archive.org) — see references/cr-v/iap.md for the fetch and the full
+reasoning trail. This replaces this file's earlier best-effort guesses, several of which turned
+out backwards or simply wrong once checked against the real spec:
+  - cmd=0x38 is NOT a Honda-specific "status poll heartbeat" — it's the real, documented
+    "Command 0x38: StartIDPS", sent Device-to-iPod, with a 16-bit *transaction ID* payload (not a
+    counter). The accessory retries it because it never received a valid ACK — "the accessory may
+    resend Start IDPS... must not retry more often than once per second" — matching exactly what
+    every live trial observed.
+  - cmd=0x00 (RequestIdentify) is iPod-to-Device, the opposite direction this file originally
+    assumed — the accessory was never going to send it to us, which is why the old
+    identify-gated app announcement code could never fire.
+  - The leading 0xFF sync byte really is UART-only — every packet table in the spec marks byte 0
+    "Sync byte (required only for UART serial)" — confirming OUTGOING_SYNC_MODE's Bluetooth
+    "short" framing fix from earlier the same day was correct, straight from Apple's own spec.
+  - `SetServerVRAppData` (this file's earlier main focus, per apps.py) turned out to be part of
+    Honda's Siri/Voice-Recognition button integration ("VR" = Voice Recognition, confirmed via
+    IPILib.dll's `IPI_*ServerVREvent` strings), not the general app-launch gate — the proactive
+    app-announcement handshake built earlier the same day is removed; it was targeting the wrong
+    mechanism entirely.
 
-WHAT IS CONFIDENT vs BEST-EFFORT here (be honest with yourself when reading logs):
+WHAT IS CONFIDENT vs BEST-EFFORT here:
   - USB gadget enumeration (Apple VID, plausible iPhone PID, vendor-class bulk interface) — same
-    confidence level as every other gadget in this repo (pi/aoa-gadget, pi/mirrorlink-ncm): built
-    against public USB/FunctionFS mechanics, untested against this specific head unit.
-  - iAP1 packet framing (sync bytes, length, checksum) — this is CONFIDENT. This exact framing
-    (0xFF 0x55 <LEN> <payload...> <checksum>, checksum making the post-sync bytes sum to 0 mod 256)
-    is consistently documented across the public, pre-2010, non-NDA "iPod Accessory Protocol"
-    community documentation that predates Apple's strict MFi authentication-chip enforcement — the
-    same baseline countless hobbyist/aftermarket iPod accessories implemented without any secret
-    Apple key material. This is NOT Apple's confidential iAP2/MFi wire spec; it's the older, public
-    protocol family.
-  - The SPECIFIC command IDs used below (RequestIdentify=0x00 etc.) are the single biggest
-    unconfirmed guess in this file — assigned from the commonly-described Request(even)/
-    Return(odd) numbering convention seen across public references, NOT verified against what
-    Honda's Communication.exe/CLP_LPAAuth actually expects on this specific head unit. Expect to
-    revise these once a live trial or wire capture shows real traffic — this file's job right now
-    is to be a instrumented, plausible starting point to iterate from, exactly like
-    aoa_gadget.c and ssdp_announce.py were for their respective bearers.
-  - How SetServerVRAppData's (ProtocolName/BundleId/URL/AppID) app-list data is actually carried
-    on the wire is UNKNOWN (iap.md, "Open risks" #2 — the real implementation lives behind an
-    unextracted module). APP_LIST_ANNOUNCE below is a placeholder transmission on a clearly
-    out-of-Apple's-reserved-range Lingo ID, sent speculatively after identify completes, purely so
-    a live capture has something concrete to correlate against — not a claim this is the real
-    mechanism.
-  - Touch-event wire format is UNKNOWN (PROTOCOL_ANALYSIS.md found no protocol-specific
-    negotiation for it). This daemon does not attempt to parse touch data — it hex-dumps and
-    timestamps everything it doesn't recognize into a separate capture file so a live trial (tap
-    the head unit's screen while connected, then diff timing against the log) can find it
-    empirically, the same methodology already used successfully for AOA/CDC-NCM discovery.
+    confidence level as every other gadget in this repo: built against public USB/FunctionFS
+    mechanics, untested against this specific head unit.
+  - iAP1 packet framing and every command ID/payload layout referenced by name below (StartIDPS,
+    SetFIDTokenValues, EndIDPS, IDPSStatus, GetDevAuthenticationInfo, RetDevAuthenticationInfo,
+    AckDevAuthenticationInfo, GetDevAuthenticationSignature, RetDevAuthenticationSignature,
+    AckDevAuthenticationStatus) — all CONFIDENT, cited directly from Apple's own spec, not
+    inferred from a capture or a public non-Apple community doc.
+  - We do NOT cryptographically validate the accessory's X.509 certificate or its signature on our
+    challenge — we have no Apple root CA key, and (importantly) nothing external enforces our own
+    validation logic, since we ARE implementing the "iPod" role ourselves. We unconditionally
+    accept whatever the accessory returns and tell it authentication succeeded. This is legitimate
+    for a Pi emulating the phone side (iap.md's "Gate 1" analysis: classic iAP1's authentication
+    threat model is the accessory proving itself to the phone, not the reverse) — not a shortcut
+    around something that would otherwise block us.
+  - Touch-event wire format is still UNKNOWN. This daemon does not attempt to parse touch data —
+    it hex-dumps and timestamps everything it doesn't recognize into a separate capture file so a
+    live trial (tap the head unit's screen while connected, then diff timing against the log) can
+    find it empirically.
 
 Usage (on the Pi, after setup_gadget.sh, BEFORE binding the UDC):
     sudo python3 iap1_daemon.py /dev/ffs-iap1
@@ -52,7 +55,7 @@ import struct
 import sys
 import time
 
-from apps import APPS, GENERAL_LINGO_IDENTITY, PHONE_IDENTITY
+from apps import GENERAL_LINGO_IDENTITY, PHONE_IDENTITY
 from markers import session_suffix
 
 # ---- FunctionFS constants (uapi/linux/usb/functionfs.h) — same values used in
@@ -79,20 +82,20 @@ SYNC = b"\xff\x55"
 LINGO_GENERAL = 0x00
 
 # Which sync form build_packet() emits — "full" (0xFF 0x55) or "short" (bare 0x55, SYNC_SHORT).
-# Defaults to "full" for USB (unconfirmed either way). btsdp_iap.py overrides this to "short" at
-# import time for the Bluetooth transport specifically: NEventWatcher.exe's own outgoing iAP1
-# packet builder (FUN_0001f714, decompiled 2026-08-10 — see iap.md) writes only a single 0x55
-# byte as its ENTIRE sync sequence, never 0xFF 0x55 — confirmed straight from the firmware's own
-# encoder, not inferred from a capture artifact. Every General-Lingo reply sent over Bluetooth
-# using the old "full" framing was therefore likely being silently dropped by the head unit's
-# parser, except CMD_STATUS_POLL_ACK, which happened to already default to short framing.
+# Defaults to "full" for USB (unconfirmed either way, though the spec below suggests "short" is
+# probably right there too). btsdp_iap.py overrides this to "short" at import time for Bluetooth:
+# confirmed twice over — first by decompiling NEventWatcher.exe's own outgoing iAP1-over-Bluetooth
+# packet builder (FUN_0001f714, 2026-08-10), which writes only a single 0x55 byte as its ENTIRE
+# sync sequence, and second by Apple's own public spec ("iPod Accessory Protocol Interface
+# Specification" R38), which marks the leading 0xFF byte "Sync byte (required only for UART
+# serial)" in every packet table — i.e. Bluetooth (and USB) genuinely don't use it.
 OUTGOING_SYNC_MODE = "full"
 
-# See module docstring — these specific numeric assignments are the least-confident part of this
-# file. Named symbolically so the mapping is easy to revise in one place once real traffic is
-# observed.
-CMD_REQUEST_IDENTIFY = 0x00
-CMD_ACK_IDENTIFY = 0x02
+# Verified 2026-08-10 against Apple's real "iPod Accessory Protocol Interface Specification"
+# (Release R38) — see module docstring. Direction is Device-to-iPod unless noted otherwise.
+CMD_REQUEST_IDENTIFY = 0x00     # iPod-to-Device only; the accessory never sends this to us (it
+                                 # already proactively sends StartIDPS on its own — observed live).
+CMD_ACK = 0x02                  # iPod-to-Device: generic ack. payload = [status, ackedCmdId].
 CMD_REQUEST_IPOD_NAME = 0x07
 CMD_RETURN_IPOD_NAME = 0x08
 CMD_REQUEST_SOFTWARE_VERSION = 0x0B
@@ -102,23 +105,26 @@ CMD_RETURN_SERIAL_NUM = 0x10
 CMD_REQUEST_MODEL_NUM = 0x1F
 CMD_RETURN_MODEL_NUM = 0x20
 
-# Head-unit-originated status/heartbeat poll — see iap.md, "cmd=0x38 confirmed as a periodic
-# post-launch retry/status poll." Consistently observed arriving as bare 0x55 (SYNC_SHORT below),
-# never the full 0xFF 0x55 sync every other packet in this file uses.
-CMD_STATUS_POLL = 0x38
-CMD_STATUS_POLL_ACK = 0x39
+# ---- Device (MFi) authentication — spec Commands 0x14-0x19. We initiate this ourselves right
+# after IDPS completes (see CMD_END_IDPS's handling in process_rx) and unconditionally accept
+# whatever the accessory returns — see module docstring for why that's legitimate here. ----
+CMD_GET_DEV_AUTHENTICATION_INFO = 0x14        # iPod-to-Device, no payload.
+CMD_RET_DEV_AUTHENTICATION_INFO = 0x15        # Device-to-iPod: [majorVer, minorVer] (Auth 1.0) or
+                                               # [2, 0, curSection, maxSection, certData...] (2.0).
+CMD_ACK_DEV_AUTHENTICATION_INFO = 0x16        # iPod-to-Device: [status] (0 = supported).
+CMD_GET_DEV_AUTHENTICATION_SIGNATURE = 0x17   # iPod-to-Device: [challenge(16 or 20B), retryCounter].
+CMD_RET_DEV_AUTHENTICATION_SIGNATURE = 0x18   # Device-to-iPod: [signature...].
+CMD_ACK_DEV_AUTHENTICATION_STATUS = 0x19      # iPod-to-Device: [status] (0 = authenticated).
 
-# See response_status_poll_ack()'s docstring.
-STATUS_POLL_REPLY_MODE = "mirror"
+# ---- IDPS (Identify Device Preferences and Settings) — spec Commands 0x38-0x3C. This is the
+# real identity of the "cmd=0x38" traffic every earlier trial captured — see module docstring. ----
+CMD_START_IDPS = 0x38                # Device-to-iPod: [transIdHi, transIdLo].
+CMD_SET_FID_TOKEN_VALUES = 0x39      # Device-to-iPod: [transIdHi, transIdLo, numTokens, tokens...].
+CMD_RET_FID_TOKEN_VALUE_ACKS = 0x3A  # iPod-to-Device: [transIdHi, transIdLo, numAcks, acks...].
+CMD_END_IDPS = 0x3B                  # Device-to-iPod: [transIdHi, transIdLo, accEndIDPSStatus].
+CMD_IDPS_STATUS = 0x3C               # iPod-to-Device: [transIdHi, transIdLo, status].
 
-# Deliberately outside any Lingo range documented in the public General Lingo family — a
-# placeholder channel for the app-list announcement described in the module docstring, chosen
-# purely to be distinctive and greppable in a live capture, not a claim about Honda's real Lingo
-# assignment for this data.
-LINGO_APP_LIST_PLACEHOLDER = 0xF0
-CMD_APP_LIST_ANNOUNCE = 0x01
-
-SYNC_SHORT = SYNC[1:]  # bare 0x55 — CMD_STATUS_POLL's consistent (missing-0xFF) framing
+SYNC_SHORT = SYNC[1:]  # bare 0x55 — the real framing for every non-UART transport, per spec.
 
 
 def iap1_checksum(body: bytes) -> int:
@@ -143,22 +149,6 @@ def build_packet(lingo: int, cmd: int, payload: bytes = b"") -> bytes:
     body, checksum = _build_body_and_checksum(lingo, cmd, payload)
     sync = SYNC if OUTGOING_SYNC_MODE == "full" else SYNC_SHORT
     return sync + body + bytes([checksum])
-
-
-def build_packet_no_sync(lingo: int, cmd: int, payload: bytes = b"") -> bytes:
-    """Same framing as build_packet, but always with the bare SYNC_SHORT (0x55) byte in front,
-    regardless of OUTGOING_SYNC_MODE — for callers that need to force short framing explicitly
-    (see response_status_poll_ack()'s "mirror" mode)."""
-    body, checksum = _build_body_and_checksum(lingo, cmd, payload)
-    return SYNC_SHORT + body + bytes([checksum])
-
-
-def build_packet_full(lingo: int, cmd: int, payload: bytes = b"") -> bytes:
-    """Same framing as build_packet, but always with the full SYNC (0xFF 0x55) in front,
-    regardless of OUTGOING_SYNC_MODE — for callers that need to force full framing explicitly
-    (see response_status_poll_ack()'s "full" mode)."""
-    body, checksum = _build_body_and_checksum(lingo, cmd, payload)
-    return SYNC + body + bytes([checksum])
 
 
 def _parse_at(buf: bytes, header_len: int):
@@ -189,11 +179,10 @@ def try_parse_packet(buf: bytes):
     drop before trying again (0 if more data is needed, otherwise how much garbage to discard
     before the next recoverable sync point).
 
-    Recognizes two sync forms: the full SYNC (0xFF 0x55, used by every command except
-    CMD_STATUS_POLL) and the bare SYNC_SHORT (0x55 alone, CMD_STATUS_POLL's consistent framing —
-    see iap.md, "First live Bluetooth iAP1 packet decoded"). SYNC_SHORT matches are
-    checksum-gated before being accepted, since a bare 0x55 is far more likely to turn up by
-    coincidence in unrelated bytes than the 2-byte full sync is.
+    Recognizes two sync forms: the full SYNC (0xFF 0x55, UART-only per spec) and the bare
+    SYNC_SHORT (0x55 alone, the real framing for Bluetooth/USB — see OUTGOING_SYNC_MODE's
+    docstring). SYNC_SHORT matches are checksum-gated before being accepted, since a bare 0x55 is
+    far more likely to turn up by coincidence in unrelated bytes than the 2-byte full sync is.
     """
     full_idx = buf.find(SYNC)
     short_idx = buf.find(SYNC_SHORT)
@@ -277,13 +266,6 @@ def build_strings() -> bytes:
 
 # ---- Response builders, using apps.py data ----
 
-def response_ack_identify() -> bytes:
-    # Best-effort payload: a single lingo-support bitmask byte (bit 0 = General Lingo supported)
-    # followed by the device name. Exact expected shape unconfirmed — see module docstring.
-    payload = bytes([0x01]) + GENERAL_LINGO_IDENTITY["ipod_name"].encode("ascii") + b"\x00"
-    return build_packet(LINGO_GENERAL, CMD_ACK_IDENTIFY, payload)
-
-
 def response_ipod_name() -> bytes:
     payload = GENERAL_LINGO_IDENTITY["ipod_name"].encode("ascii") + b"\x00"
     return build_packet(LINGO_GENERAL, CMD_RETURN_IPOD_NAME, payload)
@@ -304,30 +286,7 @@ def response_model_num() -> bytes:
     return build_packet(LINGO_GENERAL, CMD_RETURN_MODEL_NUM, payload)
 
 
-def response_status_poll_ack(payload: bytes) -> bytes:
-    """Replies to a CMD_STATUS_POLL (cmd=0x38), echoing back the received counter payload as
-    CMD_STATUS_POLL_ACK (cmd=0x39) — see iap.md, "cmd=0x38 confirmed as a periodic post-launch
-    retry/status poll." First live-tested 2026-08-10 (default "mirror" mode): the retry loop
-    continued completely unaffected before, through, and after "Could not launch app" — no change
-    in cadence, no reset. That's a real negative result for this reply *mattering*, but not for
-    its *framing*: decompiling NEventWatcher.exe's own outgoing iAP1-over-Bluetooth packet builder
-    (FUN_0001f714, see OUTGOING_SYNC_MODE's docstring) confirmed the firmware's encoder emits only
-    a bare 0x55 sync for every packet on this channel, not 0xFF 0x55 — so "mirror" mode's framing
-    theory was correct, independent of whether cmd=0x38 needed acking at all. Current read: this
-    command is very likely a free-running heartbeat, not a handshake waiting on this specific ack.
-
-    STATUS_POLL_REPLY_MODE controls framing:
-      - "mirror" (default): force bare-0x55 framing regardless of OUTGOING_SYNC_MODE.
-      - "full": force normally-framed (0xFF 0x55 ...) regardless of OUTGOING_SYNC_MODE — useful
-        as an explicit contrast case now that "short" is also the module-wide BT default.
-    """
-    if STATUS_POLL_REPLY_MODE == "mirror":
-        return build_packet_no_sync(LINGO_GENERAL, CMD_STATUS_POLL_ACK, payload)
-    return build_packet_full(LINGO_GENERAL, CMD_STATUS_POLL_ACK, payload)
-
-
 REQUEST_HANDLERS = {
-    CMD_REQUEST_IDENTIFY: response_ack_identify,
     CMD_REQUEST_IPOD_NAME: response_ipod_name,
     CMD_REQUEST_SOFTWARE_VERSION: response_software_version,
     CMD_REQUEST_SERIAL_NUM: response_serial_num,
@@ -335,44 +294,96 @@ REQUEST_HANDLERS = {
 }
 
 
-def build_app_announce(app: dict) -> bytes:
-    """Speculative placeholder — see module docstring. One packet per app: NUL-separated
-    ProtocolName/BundleId/URL followed by a 4-byte AppID, matching SetServerVRAppData(ProtocolName,
-    BundleId, URL, AppID)'s one-app-per-call signature confirmed by decompiling FUN_00076550
-    (references/cr-v/iap.md, "Resolved: the app whitelist gate") — NOT a batched multi-app packet;
-    call this once per entry in APPS. The exact Lingo/Cmd IDs below remain an unconfirmed guess
-    (SetServerVRAppData is reached only via cross-process IPC through IPILib.dll in the firmware,
-    which hasn't been decompiled) — but the field shape (one app, NUL-separated strings + AppID)
-    is now backed by a real decompile, not just a guess.
-    """
-    parts = [app["protocol_name"], app["bundle_id"], app["url"]]
-    payload = ("\x00".join(parts) + "\x00").encode("ascii", errors="replace")
-    payload += struct.pack("<I", app["app_id"])
-    return build_packet(LINGO_APP_LIST_PLACEHOLDER, CMD_APP_LIST_ANNOUNCE, payload)
+# ---- IDPS (spec Commands 0x38-0x3C) ----
+
+def build_ack(status: int, acked_cmd: int) -> bytes:
+    """Generic ACK (cmd=0x02): payload = [status, ackedCmdId]. Spec Table 2-12."""
+    return build_packet(LINGO_GENERAL, CMD_ACK, bytes([status, acked_cmd]))
 
 
-def send_proactive_handshake(ep_in_fd):
-    """Sends an unprompted "here's who I am, here's what apps I have" announcement immediately on
-    connection, instead of waiting to be asked.
+def parse_fid_token_values(payload: bytes):
+    """Parses a SetFIDTokenValues payload ([transIdHi, transIdLo, numTokens, <fields>], spec Table
+    2-68) into (trans_id, fields) — fields is a list of (info_byte_1, info_byte_2, data) per spec
+    Table 2-69. Each field's own leading length byte does not include itself."""
+    trans_id = (payload[0] << 8) | payload[1]
+    num_tokens = payload[2]
+    fields = []
+    offset = 3
+    for _ in range(num_tokens):
+        length = payload[offset]
+        info1 = payload[offset + 1]
+        info2 = payload[offset + 2]
+        data = bytes(payload[offset + 3:offset + 1 + length])
+        fields.append((info1, info2, data))
+        offset += 1 + length
+    return trans_id, fields
 
-    Why: iap1_daemon.py/btsdp_iap.py were purely reactive — every response_*() builder only ever
-    fires in reply to a request the head unit sends first. Across every live BT trial so far, the
-    head unit has NEVER sent CMD_REQUEST_IDENTIFY (or anything but the CMD_STATUS_POLL heartbeat)
-    — meaning the old code's app-list announcement, gated behind having first seen an identify
-    request (`state.identify_seen`), was dead code over this transport: it could never fire.
-    Separately, references/cr-v/iap.md's traced NotifyReceiveApp.../CheckAppAuthen call chain
-    (2026-08-10) found the head unit matches an incoming launch request's "type" field against a
-    list of apps already registered via SetServerVRAppData — if nothing has been registered, that
-    match fails and CheckAppAuthen is never even reached, which independently explains a silent
-    "Could not launch app" with no distinguishing wire traffic, exactly what's been observed.
-    This mirrors Apple's own EA framework model (the phone announces which apps opened accessory
-    sessions; the accessory doesn't poll for it) and costs nothing to try regardless of whether the
-    exact wire encoding below turns out to be correct — the mechanical fix (send instead of waiting
-    for a trigger that never arrives) is correct either way.
-    """
-    os.write(ep_in_fd, response_ack_identify())
-    for app in APPS:
-        os.write(ep_in_fd, build_app_announce(app))
+
+def build_ret_fid_token_value_acks(trans_id: int, token_fields) -> bytes:
+    """Acks every received FIDTokenValues field with a generic success ACK (spec Table 2-83's
+    4-byte shape: [length=3, infoByte1, infoByte2, ACKStatus=0]). We always accept — as the "iPod"
+    role, we're the one deciding what counts as valid identification, and nothing external is
+    checking our judgment; see module docstring."""
+    payload = bytes([(trans_id >> 8) & 0xFF, trans_id & 0xFF, len(token_fields)])
+    for info1, info2, _data in token_fields:
+        payload += bytes([0x03, info1, info2, 0x00])
+    return build_packet(LINGO_GENERAL, CMD_RET_FID_TOKEN_VALUE_ACKS, payload)
+
+
+def build_idps_status(trans_id: int, status: int = 0x00) -> bytes:
+    """Spec Table 2-93. status=0x00: all required tokens received, authentication will proceed."""
+    payload = bytes([(trans_id >> 8) & 0xFF, trans_id & 0xFF, status])
+    return build_packet(LINGO_GENERAL, CMD_IDPS_STATUS, payload)
+
+
+# ---- Device (MFi) authentication (spec Commands 0x14-0x19) ----
+
+def build_get_dev_authentication_info() -> bytes:
+    return build_packet(LINGO_GENERAL, CMD_GET_DEV_AUTHENTICATION_INFO)
+
+
+def build_ack_dev_authentication_info(status: int = 0x00) -> bytes:
+    return build_packet(LINGO_GENERAL, CMD_ACK_DEV_AUTHENTICATION_INFO, bytes([status]))
+
+
+def build_get_dev_authentication_signature(challenge: bytes, retry_counter: int) -> bytes:
+    return build_packet(LINGO_GENERAL, CMD_GET_DEV_AUTHENTICATION_SIGNATURE,
+                         challenge + bytes([retry_counter]))
+
+
+def build_ack_dev_authentication_status(status: int = 0x00) -> bytes:
+    return build_packet(LINGO_GENERAL, CMD_ACK_DEV_AUTHENTICATION_STATUS, bytes([status]))
+
+
+def handle_ret_dev_authentication_info(state, payload: bytes, ep_in_fd):
+    """RetDevAuthenticationInfo (cmd=0x15) — spec Table 2-36 (Authentication 1.0: [majorVer,
+    minorVer]) or Table 2-37 (Authentication 2.0: [2, 0, curSection, maxSection, certData...],
+    possibly split across multiple sections). Per spec: ack every non-final 2.0 section with a
+    plain ACK(0x02), and only the final section with AckDevAuthenticationInfo(0x16) — then kick
+    off the challenge/signature step (0x17) regardless of version, since we don't validate the
+    certificate anyway (see module docstring)."""
+    major, minor = payload[0], payload[1]
+    if major == 0x02:
+        cur_section, max_section = payload[2], payload[3]
+        cert_chunk = bytes(payload[4:])
+        state.cert_buf += cert_chunk
+        print(f"  -> RetDevAuthenticationInfo (Authentication 2.0, section {cur_section}/"
+              f"{max_section}, {len(cert_chunk)} cert byte(s), {len(state.cert_buf)} total)")
+        if cur_section < max_section:
+            os.write(ep_in_fd, build_ack(0x00, CMD_RET_DEV_AUTHENTICATION_INFO))
+            return  # wait for the next section before proceeding
+        print("  -> certificate complete; acking + requesting device signature")
+        os.write(ep_in_fd, build_ack_dev_authentication_info(0x00))
+    else:
+        print(f"  -> RetDevAuthenticationInfo (Authentication {major}.{minor}); "
+              "acking + requesting device signature")
+        os.write(ep_in_fd, build_ack_dev_authentication_info(0x00))
+
+    state.auth_retry_counter += 1
+    challenge_len = 20 if major == 0x02 else 16
+    challenge = os.urandom(challenge_len)
+    os.write(ep_in_fd,
+             build_get_dev_authentication_signature(challenge, state.auth_retry_counter))
 
 
 # ---- runtime ----
@@ -388,9 +399,12 @@ def hexdump(buf: bytes) -> str:
 class State:
     def __init__(self, capture_path, unclassified_path):
         self.rx_buf = bytearray()
-        self.identify_seen = False
         self.capture_fp = open(capture_path, "ab")
         self.unclassified_fp = open(unclassified_path, "ab")
+        # IDPS/device-authentication state machine — see CMD_START_IDPS's docstring.
+        self.idps_done = False
+        self.cert_buf = bytearray()   # X.509 certificate reassembly (Authentication 2.0 only)
+        self.auth_retry_counter = 0
 
 
 def handle_setup(ep0_fd, req_bytes: bytes):
@@ -455,15 +469,32 @@ def process_rx(state: State, ep_in_fd):
             write_record(state.capture_fp, time.time(), pkt_bytes)
             print(f"[rx] iAP1 packet lingo=0x{lingo:02x} cmd=0x{cmd:02x} "
                   f"payload={payload!r}")
-            if lingo == LINGO_GENERAL and cmd == CMD_REQUEST_IDENTIFY:
-                state.identify_seen = True
-                print("  -> looks like RequestIdentify — replying with AckIdentify "
-                      f"(name={GENERAL_LINGO_IDENTITY['ipod_name']!r})")
-                os.write(ep_in_fd, response_ack_identify())
-            elif lingo == LINGO_GENERAL and cmd == CMD_STATUS_POLL:
-                print(f"  -> status-poll (cmd=0x38), replying with ack "
-                      f"(mode={STATUS_POLL_REPLY_MODE})")
-                os.write(ep_in_fd, response_status_poll_ack(payload))
+            if lingo == LINGO_GENERAL and cmd == CMD_START_IDPS:
+                trans_id = (payload[0] << 8) | payload[1]
+                print(f"  -> StartIDPS (transID={trans_id}) — acking")
+                os.write(ep_in_fd, build_ack(0x00, CMD_START_IDPS))
+            elif lingo == LINGO_GENERAL and cmd == CMD_SET_FID_TOKEN_VALUES:
+                trans_id, fields = parse_fid_token_values(payload)
+                print(f"  -> SetFIDTokenValues (transID={trans_id}, {len(fields)} token(s)):")
+                for info1, info2, data in fields:
+                    print(f"       token id=(0x{info1:02x},0x{info2:02x}) data={data!r}")
+                os.write(ep_in_fd, build_ret_fid_token_value_acks(trans_id, fields))
+            elif lingo == LINGO_GENERAL and cmd == CMD_END_IDPS:
+                trans_id = (payload[0] << 8) | payload[1]
+                acc_status = payload[2]
+                print(f"  -> EndIDPS (transID={trans_id}, accEndIDPSStatus={acc_status})")
+                os.write(ep_in_fd, build_idps_status(trans_id, 0x00))
+                if acc_status == 0x00 and not state.idps_done:
+                    state.idps_done = True
+                    print("  -> IDPS complete — initiating authentication "
+                          "(GetDevAuthenticationInfo)")
+                    os.write(ep_in_fd, build_get_dev_authentication_info())
+            elif lingo == LINGO_GENERAL and cmd == CMD_RET_DEV_AUTHENTICATION_INFO:
+                handle_ret_dev_authentication_info(state, payload, ep_in_fd)
+            elif lingo == LINGO_GENERAL and cmd == CMD_RET_DEV_AUTHENTICATION_SIGNATURE:
+                print(f"  -> RetDevAuthenticationSignature ({len(payload)}-byte signature) — "
+                      "accepting unconditionally (see module docstring)")
+                os.write(ep_in_fd, build_ack_dev_authentication_status(0x00))
             elif lingo == LINGO_GENERAL and cmd in REQUEST_HANDLERS:
                 resp = REQUEST_HANDLERS[cmd]()
                 print(f"  -> recognized request cmd=0x{cmd:02x}, replying")
@@ -537,7 +568,6 @@ def main():
     print(f"Identified/recognized iAP1 packets -> {state.capture_fp.name}")
     print(f"Unclassified bytes (raw, timestamped) -> {state.unclassified_fp.name}")
     print(f"Phone identity in use: {PHONE_IDENTITY}")
-    print(f"Apps advertised (once wired up on the wire): {[a['display_name'] for a in APPS]}")
     print("\nWatching ep0 and bulk OUT concurrently. Ctrl-C to stop.\n")
 
     poller = select.poll()
@@ -564,15 +594,11 @@ def main():
                         print(f"[bulk] reopen after ENABLE failed: {reopen_err} — will fall "
                               "back to reopening on the next read error", file=sys.stderr)
                     else:
-                        # Host has enumerated the gadget — send our identify + app announcement
-                        # now instead of waiting to be asked (see send_proactive_handshake()'s
-                        # docstring; same rationale as btsdp_iap.py's Bluetooth side).
-                        print("[bulk] sending proactive identify + app announcement")
-                        try:
-                            send_proactive_handshake(ep_in_fd)
-                        except OSError as send_err:
-                            print(f"[bulk] proactive handshake send failed: {send_err}",
-                                  file=sys.stderr)
+                        # Nothing to send proactively — per spec the accessory initiates by
+                        # sending StartIDPS on its own (CMD_START_IDPS's handling below reacts
+                        # to it). See module docstring for why the old proactive app-announcement
+                        # send was removed.
+                        print("[bulk] ready — waiting for the head unit to send StartIDPS")
 
         try:
             chunk = os.read(ep_out_fd, 16384)

@@ -43,13 +43,14 @@ GENERAL_LINGO_IDENTITY = {
 }
 
 # SetServerVRAppData(ProtocolName, BundleId, URL, AppID) — see PROTOCOL_ANALYSIS.md and iap.md.
-# Confirmed (by full decompilation) that Communication.exe never validates these values against
-# anything; they are logged and stored as-is. The exact wire command/Lingo Honda uses to carry
-# this call from phone to head unit has NOT been reverse-engineered (the real iAP1/MFi wire
-# implementation lives behind an unextracted module — see iap.md "Open risks" #2) — so this data
-# is not yet wired to anything iap1_daemon.py actually transmits. It's defined here as the
-# ready-to-use payload for whenever that wire encoding is discovered (e.g. via live capture, or by
-# observing what the head unit sends immediately after a successful identify exchange).
+# NOT the general app-launch/session mechanism this was originally assumed to be. Decompiling
+# IPILib.dll (2026-08-10) found its only relevant strings are all "ServerVR"-prefixed IPC events
+# (IPI_CommNotifyPressedServerVRKeyEvent, IPI_EnableServerVREvent, etc.) — "VR" is Voice
+# Recognition (Honda's Siri/voice-button integration), not a generic app registry. iap1_daemon.py
+# no longer calls anything here; the real app-launch blocker turned out to be the IDPS + MFi
+# device-authentication handshake (see iap1_daemon.py's module docstring), which doesn't involve
+# SetServerVRAppData at all. Left in place only as a reference for whenever the Siri/VR-button
+# integration itself becomes the thing being worked on — not part of the current critical path.
 APPS = [
     {
         "protocol_name": "com.honda.hondalink.test",
