@@ -78,6 +78,16 @@ FUNCTIONFS_ENABLE = 2
 SYNC = b"\xff\x55"
 LINGO_GENERAL = 0x00
 
+# Which sync form build_packet() emits — "full" (0xFF 0x55) or "short" (bare 0x55, SYNC_SHORT).
+# Defaults to "full" for USB (unconfirmed either way). btsdp_iap.py overrides this to "short" at
+# import time for the Bluetooth transport specifically: NEventWatcher.exe's own outgoing iAP1
+# packet builder (FUN_0001f714, decompiled 2026-08-10 — see iap.md) writes only a single 0x55
+# byte as its ENTIRE sync sequence, never 0xFF 0x55 — confirmed straight from the firmware's own
+# encoder, not inferred from a capture artifact. Every General-Lingo reply sent over Bluetooth
+# using the old "full" framing was therefore likely being silently dropped by the head unit's
+# parser, except CMD_STATUS_POLL_ACK, which happened to already default to short framing.
+OUTGOING_SYNC_MODE = "full"
+
 # See module docstring — these specific numeric assignments are the least-confident part of this
 # file. Named symbolically so the mapping is easy to revise in one place once real traffic is
 # observed.
@@ -116,22 +126,39 @@ def iap1_checksum(body: bytes) -> int:
     return (0x100 - (sum(body) & 0xFF)) & 0xFF
 
 
-def build_packet(lingo: int, cmd: int, payload: bytes = b"") -> bytes:
+def _build_body_and_checksum(lingo: int, cmd: int, payload: bytes):
     body_payload = bytes([lingo, cmd]) + payload
     length = len(body_payload)
     body = bytes([length]) + body_payload
     checksum = iap1_checksum(body)
-    return SYNC + body + bytes([checksum])
+    return body, checksum
+
+
+def build_packet(lingo: int, cmd: int, payload: bytes = b"") -> bytes:
+    """Builds a framed packet using OUTGOING_SYNC_MODE's sync form ("full" 0xFF 0x55, or "short"
+    bare 0x55 — see OUTGOING_SYNC_MODE's docstring). This is the framing every response_*()
+    builder in this file uses; btsdp_iap.py sets OUTGOING_SYNC_MODE = "short" at import time so
+    all of its replies use the firmware-confirmed Bluetooth framing without each call site having
+    to know about it."""
+    body, checksum = _build_body_and_checksum(lingo, cmd, payload)
+    sync = SYNC if OUTGOING_SYNC_MODE == "full" else SYNC_SHORT
+    return sync + body + bytes([checksum])
 
 
 def build_packet_no_sync(lingo: int, cmd: int, payload: bytes = b"") -> bytes:
-    """Same framing as build_packet, but with only the bare SYNC_SHORT (0x55) byte in front,
-    omitting the leading 0xFF — see response_status_poll_ack()'s docstring for why."""
-    body_payload = bytes([lingo, cmd]) + payload
-    length = len(body_payload)
-    body = bytes([length]) + body_payload
-    checksum = iap1_checksum(body)
+    """Same framing as build_packet, but always with the bare SYNC_SHORT (0x55) byte in front,
+    regardless of OUTGOING_SYNC_MODE — for callers that need to force short framing explicitly
+    (see response_status_poll_ack()'s "mirror" mode)."""
+    body, checksum = _build_body_and_checksum(lingo, cmd, payload)
     return SYNC_SHORT + body + bytes([checksum])
+
+
+def build_packet_full(lingo: int, cmd: int, payload: bytes = b"") -> bytes:
+    """Same framing as build_packet, but always with the full SYNC (0xFF 0x55) in front,
+    regardless of OUTGOING_SYNC_MODE — for callers that need to force full framing explicitly
+    (see response_status_poll_ack()'s "full" mode)."""
+    body, checksum = _build_body_and_checksum(lingo, cmd, payload)
+    return SYNC + body + bytes([checksum])
 
 
 def _parse_at(buf: bytes, header_len: int):
@@ -280,21 +307,23 @@ def response_model_num() -> bytes:
 def response_status_poll_ack(payload: bytes) -> bytes:
     """Replies to a CMD_STATUS_POLL (cmd=0x38), echoing back the received counter payload as
     CMD_STATUS_POLL_ACK (cmd=0x39) — see iap.md, "cmd=0x38 confirmed as a periodic post-launch
-    retry/status poll." Untested against real hardware (iap.md documented an earlier "tested
-    live: no effect" result, but the code that was supposedly tested was never actually committed
-    — see iap.md's 2026-08-10 comparative re-verification note. Treat this as the first real
-    attempt, not a retest.).
+    retry/status poll." First live-tested 2026-08-10 (default "mirror" mode): the retry loop
+    continued completely unaffected before, through, and after "Could not launch app" — no change
+    in cadence, no reset. That's a real negative result for this reply *mattering*, but not for
+    its *framing*: decompiling NEventWatcher.exe's own outgoing iAP1-over-Bluetooth packet builder
+    (FUN_0001f714, see OUTGOING_SYNC_MODE's docstring) confirmed the firmware's encoder emits only
+    a bare 0x55 sync for every packet on this channel, not 0xFF 0x55 — so "mirror" mode's framing
+    theory was correct, independent of whether cmd=0x38 needed acking at all. Current read: this
+    command is very likely a free-running heartbeat, not a handshake waiting on this specific ack.
 
     STATUS_POLL_REPLY_MODE controls framing:
-      - "mirror" (default): omit the leading 0xFF, matching CMD_STATUS_POLL's own observed
-        wire framing (every captured instance arrives as bare 0x55, never 0xFF 0x55) — on the
-        theory that if the head unit's transmit side is consistently short-framed for this
-        command, its receive side might expect the same and silently drop a fully-synced reply.
-      - "full": send a normally-framed (0xFF 0x55 ...) reply like every other packet in this file.
+      - "mirror" (default): force bare-0x55 framing regardless of OUTGOING_SYNC_MODE.
+      - "full": force normally-framed (0xFF 0x55 ...) regardless of OUTGOING_SYNC_MODE — useful
+        as an explicit contrast case now that "short" is also the module-wide BT default.
     """
     if STATUS_POLL_REPLY_MODE == "mirror":
         return build_packet_no_sync(LINGO_GENERAL, CMD_STATUS_POLL_ACK, payload)
-    return build_packet(LINGO_GENERAL, CMD_STATUS_POLL_ACK, payload)
+    return build_packet_full(LINGO_GENERAL, CMD_STATUS_POLL_ACK, payload)
 
 
 REQUEST_HANDLERS = {

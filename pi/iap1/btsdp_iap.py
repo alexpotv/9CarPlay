@@ -52,8 +52,18 @@ import dbus.mainloop.glib
 import dbus.service
 from gi.repository import GLib
 
+import iap1_daemon
 from iap1_daemon import State, process_rx
 from markers import session_suffix
+
+# NEventWatcher.exe's own outgoing iAP1-over-Bluetooth packet builder (decompiled 2026-08-10,
+# FUN_0001f714 — see iap1_daemon.py's OUTGOING_SYNC_MODE docstring) writes only a bare 0x55 sync
+# byte, never 0xFF 0x55. Every response_*() builder in iap1_daemon.py goes through build_packet(),
+# which honors this module-level flag — set it here, once, so every reply this process sends over
+# RFCOMM uses the firmware-confirmed framing without each response builder needing to know it's
+# running under Bluetooth specifically. iap1_daemon.py's own USB-side main() leaves the default
+# ("full") alone, since there's no equivalent firmware evidence for the USB transport yet.
+iap1_daemon.OUTGOING_SYNC_MODE = "short"
 
 BUS_NAME = "org.bluez"
 PROFILE_MANAGER_PATH = "/org/bluez"
