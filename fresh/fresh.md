@@ -31,3 +31,5 @@ Dans bluetoothctl:
 Une fois stable:
 cd ../iap1                                                                          
 sudo python3 btsdp_iap.py
+
+Puis lancer HondaLink
