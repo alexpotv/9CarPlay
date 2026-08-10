@@ -17,12 +17,46 @@ set -euo pipefail
 
 echo "Looking for a way to drive HDMI output..."
 
+# Preferred method: have ffmpeg write frames straight into /dev/fb0 via its fbdev muxer. This
+# talks directly to the kernel framebuffer device — no SDL, no window system, no GBM/EGL/GL
+# context — so it sidesteps both failure modes ffplay hit on this headless Pi ("Couldn't find
+# matching render driver" with the default driver, then "EGL not initialized" once forced onto
+# kmsdrm, which needs a working GBM/Mesa GLES stack that isn't guaranteed to be set up).
+if command -v ffmpeg >/dev/null 2>&1 && [[ -e /dev/fb0 ]]; then
+    echo "Using ffmpeg's fbdev muxer to write straight to /dev/fb0 (no SDL/EGL involved)."
+    FB_W=1280
+    FB_H=720
+    if [[ -r /sys/class/graphics/fb0/virtual_size ]]; then
+        IFS=',' read -r FB_W FB_H < /sys/class/graphics/fb0/virtual_size
+    fi
+    BPP=32
+    if [[ -r /sys/class/graphics/fb0/bits_per_pixel ]]; then
+        BPP="$(cat /sys/class/graphics/fb0/bits_per_pixel)"
+    fi
+    case "$BPP" in
+        16) PIXFMT=rgb565le ;;
+        24) PIXFMT=bgr24 ;;
+        32) PIXFMT=bgra ;;
+        *) PIXFMT=bgra ;;
+    esac
+    echo "Framebuffer: ${FB_W}x${FB_H} @ ${BPP}bpp -> pix_fmt=$PIXFMT"
+    # Not exec'd: a plain call lets us fall through to the next method if this fails (wrong
+    # pixel format for this particular fb driver, /dev/fb0 busy, etc.) instead of just exiting.
+    if ffmpeg -f lavfi -i "testsrc=size=${FB_W}x${FB_H}:rate=30" -pix_fmt "$PIXFMT" \
+        -f fbdev -y /dev/fb0 -loglevel warning; then
+        exit 0
+    fi
+    echo "ffmpeg fbdev output failed — are you root, and is nothing else (a desktop session, " >&2
+    echo "another ffmpeg/fbi) already holding /dev/fb0? Falling through to the next method." >&2
+fi
+
 # ffplay renders through SDL2, which defaults to looking for an X11/Wayland session. On a
 # headless Pi (no desktop session running) there is none, so SDL falls through to a driver that
 # can't actually put pixels on the HDMI output ("Couldn't find matching render driver") and warns
 # about XDG_RUNTIME_DIR along the way. Fix: point SDL straight at the KMS/DRM output (the same
 # framebuffer console output uses) and make sure XDG_RUNTIME_DIR exists, since SDL still checks
-# for it even in this mode.
+# for it even in this mode. Kept as a fallback below the fbdev method above, since kmsdrm still
+# needs a working GBM/EGL/GLES stack that the fbdev method doesn't depend on at all.
 if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -d "${XDG_RUNTIME_DIR:-/nonexistent}" ]]; then
     export XDG_RUNTIME_DIR="/tmp/xdg-runtime-$(id -u)"
     mkdir -p "$XDG_RUNTIME_DIR"
