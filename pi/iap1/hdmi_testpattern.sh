@@ -40,10 +40,15 @@ if command -v ffmpeg >/dev/null 2>&1 && [[ -e /dev/fb0 ]]; then
         *) PIXFMT=bgra ;;
     esac
     echo "Framebuffer: ${FB_W}x${FB_H} @ ${BPP}bpp -> pix_fmt=$PIXFMT"
-    # Not exec'd: a plain call lets us fall through to the next method if this fails (wrong
-    # pixel format for this particular fb driver, /dev/fb0 busy, etc.) instead of just exiting.
-    if ffmpeg -f lavfi -i "testsrc=size=${FB_W}x${FB_H}:rate=30" -pix_fmt "$PIXFMT" \
+    # A single static frame, not a continuous stream: every other method in this script (fbi,
+    # the raw Python writer below) just paints one image and stops, matching the actual goal
+    # ("something visibly changes on the screen," not live video). Streaming testsrc at 30fps
+    # meant re-running swscale's chroma-to-RGB565 conversion every frame, which was heavy enough
+    # on the Pi's CPU to cause visible lag and, per a live trial, a crash. One frame is instant
+    # and avoids that entirely.
+    if ffmpeg -f lavfi -i "testsrc=size=${FB_W}x${FB_H}" -frames:v 1 -pix_fmt "$PIXFMT" \
         -f fbdev -y /dev/fb0 -loglevel warning; then
+        echo "Wrote one static frame to /dev/fb0."
         exit 0
     fi
     echo "ffmpeg fbdev output failed — are you root, and is nothing else (a desktop session, " >&2
