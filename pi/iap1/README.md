@@ -66,8 +66,9 @@ Same as `pi/aoa-gadget/` and `pi/mirrorlink-ncm/`:
   a Pi 4/5 via its USB-C port).
 - `dtoverlay=dwc2` in `/boot/firmware/config.txt`, then reboot.
 - `libcomposite` kernel module (`modprobe libcomposite`).
-- Python 3 (no non-stdlib dependencies — `iap1_daemon.py` only uses `os`/`select`/`struct`/`sys`/
-  `time`).
+- Python 3 (no non-stdlib dependencies for `iap1_daemon.py` itself — only `os`/`select`/`struct`/
+  `sys`/`time`). `btsdp_iap.py` (Bluetooth iAP listener) additionally needs
+  `python3-dbus`/`python3-gi`, same as `pi/bluetooth-test/hfp_ag.py`.
 - Cannot coexist with the AOA or CDC-NCM gadgets — all three bind the same UDC. Tear down whichever
   is currently active first.
 
@@ -91,6 +92,15 @@ Same as `pi/aoa-gadget/` and `pi/mirrorlink-ncm/`:
   (discoverable/pairable, Class of Device 0x5A020C), a confirmed precondition for this path (see
   above and `iap.md`). Does not implement HFP itself — pairs with `pi/bluetooth-test/hfp_ag.py`
   (reused directly, not duplicated) for the actual Hands-Free Profile Audio Gateway role.
+- `BTMON_ANALYSIS.md` — step-by-step instructions for capturing and analyzing a Bluetooth HCI trace
+  (`btmon`) to determine whether the head unit actually searches for/connects to the real
+  iAP-over-Bluetooth SDP service (`iap.md`, "A real iAP-over-Bluetooth transport exists") — a live
+  capture already confirmed the search happens (see below); rerun this procedure alongside
+  `btsdp_iap.py` to check the follow-up RFCOMM connection.
+- `btsdp_iap.py` — hosts the SDP service record + RFCOMM listener for the UUID the head unit was
+  confirmed (via live capture) to search for, and feeds anything received on it into the same iAP1
+  packet parser `iap1_daemon.py` uses for USB. Run alongside `hfp_ag.py`, after `setup_bt_phone.sh`.
+  Needs `python3-dbus`/`python3-gi` (same as `hfp_ag.py`).
 
 ## Quickstart
 
@@ -110,6 +120,16 @@ Same as `pi/aoa-gadget/` and `pi/mirrorlink-ncm/`:
    just "paired" — before moving on. See `setup_bt_phone.sh`'s own printed instructions and
    `pi/bluetooth-test/README.md` "Phase A"/"Phase B" for troubleshooting connect/disconnect
    flapping.
+2b. **Also start the Bluetooth iAP listener**, alongside (not instead of) `hfp_ag.py` — a live
+   capture confirmed the head unit performs an SDP search for the iAP-over-Bluetooth UUID
+   immediately after HFP connects (`iap.md`, "Confirmed by live btmon capture"), so this needs to
+   already be registered before/while pairing, not started afterward:
+   ```
+   sudo python3 btsdp_iap.py
+   ```
+   Run `BTMON_ANALYSIS.md`'s capture procedure again during this trial — this time the SDP search
+   should resolve to a match, and you're watching for whether the head unit follows up with an
+   RFCOMM connection to the advertised channel and, if so, what it sends.
 3. On the Pi, before connecting to the head unit's USB port:
    ```
    sudo ./setup_gadget.sh
@@ -185,6 +205,18 @@ Same as `pi/aoa-gadget/` and `pi/mirrorlink-ncm/`:
 - Gate 1 (MFi device attestation) isn't implemented at all — if it's required before this layer is
   reached, this scaffold will need a real (or convincingly faked) MFi coprocessor response first,
   which is a separate, harder problem (see `iap.md`).
+- **A second, entirely separate iAP1 channel over Bluetooth SPP/RFCOMM is confirmed to be searched
+  for, and is now implemented (`btsdp_iap.py`) but not yet validated end-to-end.** `iap.md` ("A real
+  iAP-over-Bluetooth transport exists" / "Confirmed by live btmon capture") found Apple's real public
+  iAP-over-Bluetooth SDP UUID hardcoded and in active use in `Communication.exe`, then a live `btmon`
+  capture caught the head unit actually performing an unconditional SDP search for it right after
+  HFP connects — getting an empty response since nothing on the Pi hosted it yet. `btsdp_iap.py` now
+  registers a BlueZ profile for that exact UUID (`00000000-deca-fade-deca-deafdecacafe` — note the
+  live capture's last byte, `0xFE`, differs from the earlier static-analysis read of `0xFF`) and
+  feeds any RFCOMM traffic into the same iAP1 parser used for USB. Not yet confirmed: whether the
+  head unit actually connects once the search resolves, and whether it sends real iAP1 framing
+  (`ff 55` sync bytes) over that channel — rerun `BTMON_ANALYSIS.md`'s capture procedure with
+  `btsdp_iap.py` running to check.
 - `wMaxPacketSize`/`bInterval` values are reasonable defaults, not verified against what the head
   unit actually expects for this interface.
 - The BD-address "accessory" registration flow (does the head unit need to learn the Pi's MAC via

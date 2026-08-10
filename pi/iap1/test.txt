@@ -1,0 +1,2054 @@
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+     63 53.094810      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      41     Rcvd Service Search Attribute Request : AG Hands-Free: L2CAP: RFCOMM: [Protocol Descriptor List 0x0004] [Bluetooth Profile Descriptor List 0x0009] [(HFP AG) Network 0x0301] [(HFP AG) Supported Features 0x0311]  0.002448
+
+Frame 63: Packet, 41 bytes on wire (328 bits), 41 bytes captured (328 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:38.840062000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:38.840062000 UTC
+    Epoch Arrival Time: 1786325018.840062000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 2.448000 milliseconds]
+    [Time since reference or first frame: 53.094810000 seconds]
+    Frame Number: 63
+    Frame Length: 41 bytes (328 bits)
+    Capture Length: 41 bytes (328 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 37
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 33
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 53]
+    [Disconnect in frame: 65]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x000e
+    Parameter Length: 28
+    Service Search Pattern: AG Hands-Free: L2CAP: RFCOMM
+        Data Element: Sequence uint8 9 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 9
+            Data Value
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: AG Hands-Free (0x111f)
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: L2CAP (0x0100)
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: RFCOMM (0x0003)
+    Maximum Attribute Byte Count: 100
+    Attribute ID List
+        Data Element: Sequence uint8 12 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 12
+            Data Value
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+                Attribute ID: Network (HFP AG) 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Network (0x0301)
+                Attribute ID: Supported Features (HFP AG) 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Supported Features (0x0311)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+     64 53.094899      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      61     Sent Service Search Attribute Response                          0.000089
+
+Frame 64: Packet, 61 bytes on wire (488 bits), 61 bytes captured (488 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:38.840151000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:38.840151000 UTC
+    Epoch Arrival Time: 1786325018.840151000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 89.000 microseconds]
+    [Time delta from previous displayed frame: 89.000 microseconds]
+    [Time since reference or first frame: 53.094899000 seconds]
+    Frame Number: 64
+    Frame Length: 61 bytes (488 bits)
+    Capture Length: 61 bytes (488 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 57
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 53
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 53]
+    [Disconnect in frame: 65]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x000e
+    Parameter Length: 48
+    Attribute List Byte Count: 45
+    Attribute Lists [count =  1]
+        Data Element: Sequence uint8 43 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 43
+            Data Value
+                Attribute List [count =  4] (AG Hands-Free)
+                    Data Element: Sequence uint8 41 bytes
+                        0011 0... = Data Element Type: Sequence (6)
+                        .... .101 = Data Element Size: uint8 (5)
+                        Data Element Var Size: 41
+                        Data Value
+                            Service Attribute: Protocol Descriptor List (0x4), value = L2CAP -> RFCOMM:1
+                                Attribute ID: Protocol Descriptor List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Protocol Descriptor List (0x0004)
+                                Value
+                            Service Attribute: Bluetooth Profile Descriptor List (0x9), value = Hands-Free 1.8
+                                Attribute ID: Bluetooth Profile Descriptor List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+                                Value
+                            Service Attribute: (HFP AG) Network (0x301), value = Ability to reject a call
+                                Attribute ID: Network
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Network (0x0301)
+                                Value
+                            Service Attribute: (HFP AG) Supported Features (0x311), value = (Three Way Calling) (Inband Ring Tone Capability) 
+                                Attribute ID: Supported Features
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Supported Features (0x0311)
+                                Value
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    132 53.601018      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      32     Rcvd Service Search Attribute Request : AG Hands-Free: [Service Class ID List 0x0001] [Protocol Descriptor List 0x0004] [Bluetooth Profile Descriptor List 0x0009]  0.006288
+
+Frame 132: Packet, 32 bytes on wire (256 bits), 32 bytes captured (256 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.346270000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.346270000 UTC
+    Epoch Arrival Time: 1786325019.346270000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 6.288000 milliseconds]
+    [Time delta from previous displayed frame: 506.119000 milliseconds]
+    [Time since reference or first frame: 53.601018000 seconds]
+    Frame Number: 132
+    Frame Length: 32 bytes (256 bits)
+    Capture Length: 32 bytes (256 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 28
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 24
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x000f
+    Parameter Length: 19
+    Service Search Pattern: AG Hands-Free
+        Data Element: Sequence uint8 3 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 3
+            Data Value
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: AG Hands-Free (0x111f)
+    Maximum Attribute Byte Count: 128
+    Attribute ID List
+        Data Element: Sequence uint8 9 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 9
+            Data Value
+                Attribute ID: Service Class ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Class ID List (0x0001)
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    133 53.601118      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      61     Sent Service Search Attribute Response                          0.000100
+
+Frame 133: Packet, 61 bytes on wire (488 bits), 61 bytes captured (488 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.346370000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.346370000 UTC
+    Epoch Arrival Time: 1786325019.346370000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 100.000 microseconds]
+    [Time delta from previous displayed frame: 100.000 microseconds]
+    [Time since reference or first frame: 53.601118000 seconds]
+    Frame Number: 133
+    Frame Length: 61 bytes (488 bits)
+    Capture Length: 61 bytes (488 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 57
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 53
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x000f
+    Parameter Length: 48
+    Attribute List Byte Count: 45
+    Attribute Lists [count =  1]
+        Data Element: Sequence uint8 43 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 43
+            Data Value
+                Attribute List [count =  3] (AG Hands-Free)
+                    Data Element: Sequence uint8 41 bytes
+                        0011 0... = Data Element Type: Sequence (6)
+                        .... .101 = Data Element Size: uint8 (5)
+                        Data Element Var Size: 41
+                        Data Value
+                            Service Attribute: Service Class ID List (0x1), value = AG Hands-Free -> Generic Audio
+                                Attribute ID: Service Class ID List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Service Class ID List (0x0001)
+                                Value
+                            Service Attribute: Protocol Descriptor List (0x4), value = L2CAP -> RFCOMM:1
+                                Attribute ID: Protocol Descriptor List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Protocol Descriptor List (0x0004)
+                                Value
+                            Service Attribute: Bluetooth Profile Descriptor List (0x9), value = Hands-Free 1.8
+                                Attribute ID: Bluetooth Profile Descriptor List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+                                Value
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    135 53.637266      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      32     Rcvd Service Search Attribute Request : Audio Source: [Service Class ID List 0x0001] [Protocol Descriptor List 0x0004] [Bluetooth Profile Descriptor List 0x0009]  0.002401
+
+Frame 135: Packet, 32 bytes on wire (256 bits), 32 bytes captured (256 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.382518000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.382518000 UTC
+    Epoch Arrival Time: 1786325019.382518000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 2.401000 milliseconds]
+    [Time delta from previous displayed frame: 36.148000 milliseconds]
+    [Time since reference or first frame: 53.637266000 seconds]
+    Frame Number: 135
+    Frame Length: 32 bytes (256 bits)
+    Capture Length: 32 bytes (256 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 28
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 24
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x0010
+    Parameter Length: 19
+    Service Search Pattern: Audio Source
+        Data Element: Sequence uint8 3 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 3
+            Data Value
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: Audio Source (0x110a)
+    Maximum Attribute Byte Count: 128
+    Attribute ID List
+        Data Element: Sequence uint8 9 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 9
+            Data Value
+                Attribute ID: Service Class ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Class ID List (0x0001)
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    136 53.637356      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      62     Sent Service Search Attribute Response                          0.000090
+
+Frame 136: Packet, 62 bytes on wire (496 bits), 62 bytes captured (496 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.382608000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.382608000 UTC
+    Epoch Arrival Time: 1786325019.382608000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 90.000 microseconds]
+    [Time delta from previous displayed frame: 90.000 microseconds]
+    [Time since reference or first frame: 53.637356000 seconds]
+    Frame Number: 136
+    Frame Length: 62 bytes (496 bits)
+    Capture Length: 62 bytes (496 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 58
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 54
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x0010
+    Parameter Length: 49
+    Attribute List Byte Count: 46
+    Attribute Lists [count =  1]
+        Data Element: Sequence uint8 44 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 44
+            Data Value
+                Attribute List [count =  3] (Audio Source)
+                    Data Element: Sequence uint8 42 bytes
+                        0011 0... = Data Element Type: Sequence (6)
+                        .... .101 = Data Element Size: uint8 (5)
+                        Data Element Var Size: 42
+                        Data Value
+                            Service Attribute: Service Class ID List (0x1), value = Audio Source
+                                Attribute ID: Service Class ID List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Service Class ID List (0x0001)
+                                Value
+                            Service Attribute: Protocol Descriptor List (0x4), value = L2CAP:25 -> AVDTP (1.3)
+                                Attribute ID: Protocol Descriptor List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Protocol Descriptor List (0x0004)
+                                Value
+                            Service Attribute: Bluetooth Profile Descriptor List (0x9), value = Advanced Audio Distribution 1.4
+                                Attribute ID: Bluetooth Profile Descriptor List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+                                Value
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    137 53.649786      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      32     Rcvd Service Search Attribute Request : A/V Remote Control Target: [Service Class ID List 0x0001] [Protocol Descriptor List 0x0004] [Bluetooth Profile Descriptor List 0x0009]  0.012430
+
+Frame 137: Packet, 32 bytes on wire (256 bits), 32 bytes captured (256 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.395038000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.395038000 UTC
+    Epoch Arrival Time: 1786325019.395038000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 12.430000 milliseconds]
+    [Time delta from previous displayed frame: 12.430000 milliseconds]
+    [Time since reference or first frame: 53.649786000 seconds]
+    Frame Number: 137
+    Frame Length: 32 bytes (256 bits)
+    Capture Length: 32 bytes (256 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 28
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 24
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x0011
+    Parameter Length: 19
+    Service Search Pattern: A/V Remote Control Target
+        Data Element: Sequence uint8 3 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 3
+            Data Value
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: A/V Remote Control Target (0x110c)
+    Maximum Attribute Byte Count: 128
+    Attribute ID List
+        Data Element: Sequence uint8 9 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 9
+            Data Value
+                Attribute ID: Service Class ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Class ID List (0x0001)
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    138 53.649880      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      62     Sent Service Search Attribute Response                          0.000094
+
+Frame 138: Packet, 62 bytes on wire (496 bits), 62 bytes captured (496 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.395132000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.395132000 UTC
+    Epoch Arrival Time: 1786325019.395132000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 94.000 microseconds]
+    [Time delta from previous displayed frame: 94.000 microseconds]
+    [Time since reference or first frame: 53.649880000 seconds]
+    Frame Number: 138
+    Frame Length: 62 bytes (496 bits)
+    Capture Length: 62 bytes (496 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 58
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 54
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x0011
+    Parameter Length: 49
+    Attribute List Byte Count: 46
+    Attribute Lists [count =  1]
+        Data Element: Sequence uint8 44 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 44
+            Data Value
+                Attribute List [count =  3] (A/V Remote Control Target)
+                    Data Element: Sequence uint8 42 bytes
+                        0011 0... = Data Element Type: Sequence (6)
+                        .... .101 = Data Element Size: uint8 (5)
+                        Data Element Var Size: 42
+                        Data Value
+                            Service Attribute: Service Class ID List (0x1), value = A/V Remote Control Target
+                                Attribute ID: Service Class ID List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Service Class ID List (0x0001)
+                                Value
+                            Service Attribute: Protocol Descriptor List (0x4), value = L2CAP:23 -> AVCTP (1.4)
+                                Attribute ID: Protocol Descriptor List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Protocol Descriptor List (0x0004)
+                                Value
+                            Service Attribute: Bluetooth Profile Descriptor List (0x9), value = A/V Remote Control 1.6
+                                Attribute ID: Bluetooth Profile Descriptor List
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+                                Value
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    140 53.676015      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      32     Rcvd Service Search Attribute Request : Dial-Up Networking: [Service Class ID List 0x0001] [Protocol Descriptor List 0x0004] [Bluetooth Profile Descriptor List 0x0009]  0.002401
+
+Frame 140: Packet, 32 bytes on wire (256 bits), 32 bytes captured (256 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.421267000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.421267000 UTC
+    Epoch Arrival Time: 1786325019.421267000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 2.401000 milliseconds]
+    [Time delta from previous displayed frame: 26.135000 milliseconds]
+    [Time since reference or first frame: 53.676015000 seconds]
+    Frame Number: 140
+    Frame Length: 32 bytes (256 bits)
+    Capture Length: 32 bytes (256 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 28
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 24
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x0012
+    Parameter Length: 19
+    Service Search Pattern: Dial-Up Networking
+        Data Element: Sequence uint8 3 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 3
+            Data Value
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: Dial-Up Networking (0x1103)
+    Maximum Attribute Byte Count: 128
+    Attribute ID List
+        Data Element: Sequence uint8 9 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 9
+            Data Value
+                Attribute ID: Service Class ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Class ID List (0x0001)
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    141 53.676083      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      18     Sent Service Search Attribute Response                          0.000068
+
+Frame 141: Packet, 18 bytes on wire (144 bits), 18 bytes captured (144 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.421335000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.421335000 UTC
+    Epoch Arrival Time: 1786325019.421335000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 68.000 microseconds]
+    [Time delta from previous displayed frame: 68.000 microseconds]
+    [Time since reference or first frame: 53.676083000 seconds]
+    Frame Number: 141
+    Frame Length: 18 bytes (144 bits)
+    Capture Length: 18 bytes (144 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 14
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 10
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x0012
+    Parameter Length: 5
+    Attribute List Byte Count: 2
+    Attribute Lists [count =  0]
+        Data Element: Sequence uint8 0 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 0
+            Data Value: MISSING
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    142 53.682267      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      32     Rcvd Service Search Attribute Request : Phonebook Access Server: [Service Class ID List 0x0001] [Protocol Descriptor List 0x0004] [Bluetooth Profile Descriptor List 0x0009]  0.006184
+
+Frame 142: Packet, 32 bytes on wire (256 bits), 32 bytes captured (256 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.427519000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.427519000 UTC
+    Epoch Arrival Time: 1786325019.427519000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 6.184000 milliseconds]
+    [Time delta from previous displayed frame: 6.184000 milliseconds]
+    [Time since reference or first frame: 53.682267000 seconds]
+    Frame Number: 142
+    Frame Length: 32 bytes (256 bits)
+    Capture Length: 32 bytes (256 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 28
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 24
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x0013
+    Parameter Length: 19
+    Service Search Pattern: Phonebook Access Server
+        Data Element: Sequence uint8 3 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 3
+            Data Value
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: Phonebook Access Server (0x112f)
+    Maximum Attribute Byte Count: 128
+    Attribute ID List
+        Data Element: Sequence uint8 9 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 9
+            Data Value
+                Attribute ID: Service Class ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Class ID List (0x0001)
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    143 53.682313      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      18     Sent Service Search Attribute Response                          0.000046
+
+Frame 143: Packet, 18 bytes on wire (144 bits), 18 bytes captured (144 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.427565000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.427565000 UTC
+    Epoch Arrival Time: 1786325019.427565000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 46.000 microseconds]
+    [Time delta from previous displayed frame: 46.000 microseconds]
+    [Time since reference or first frame: 53.682313000 seconds]
+    Frame Number: 143
+    Frame Length: 18 bytes (144 bits)
+    Capture Length: 18 bytes (144 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 14
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 10
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x0013
+    Parameter Length: 5
+    Attribute List Byte Count: 2
+    Attribute Lists [count =  0]
+        Data Element: Sequence uint8 0 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 0
+            Data Value: MISSING
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    145 53.688536      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      32     Rcvd Service Search Attribute Request : Serial Port: [Service Class ID List 0x0001] [Protocol Descriptor List 0x0004] [Bluetooth Profile Descriptor List 0x0009]  0.002423
+
+Frame 145: Packet, 32 bytes on wire (256 bits), 32 bytes captured (256 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.433788000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.433788000 UTC
+    Epoch Arrival Time: 1786325019.433788000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 2.423000 milliseconds]
+    [Time delta from previous displayed frame: 6.223000 milliseconds]
+    [Time since reference or first frame: 53.688536000 seconds]
+    Frame Number: 145
+    Frame Length: 32 bytes (256 bits)
+    Capture Length: 32 bytes (256 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 28
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 24
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x0014
+    Parameter Length: 19
+    Service Search Pattern: Serial Port
+        Data Element: Sequence uint8 3 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 3
+            Data Value
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: Serial Port (0x1101)
+    Maximum Attribute Byte Count: 128
+    Attribute ID List
+        Data Element: Sequence uint8 9 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 9
+            Data Value
+                Attribute ID: Service Class ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Class ID List (0x0001)
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    146 53.688604      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      18     Sent Service Search Attribute Response                          0.000068
+
+Frame 146: Packet, 18 bytes on wire (144 bits), 18 bytes captured (144 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.433856000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.433856000 UTC
+    Epoch Arrival Time: 1786325019.433856000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 68.000 microseconds]
+    [Time delta from previous displayed frame: 68.000 microseconds]
+    [Time since reference or first frame: 53.688604000 seconds]
+    Frame Number: 146
+    Frame Length: 18 bytes (144 bits)
+    Capture Length: 18 bytes (144 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 14
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 10
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x0014
+    Parameter Length: 5
+    Attribute List Byte Count: 2
+    Attribute Lists [count =  0]
+        Data Element: Sequence uint8 0 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 0
+            Data Value: MISSING
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    147 53.694817      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      44     Rcvd Service Search Attribute Request : Message Access Server: [Service Class ID List 0x0001] [Protocol Descriptor List 0x0004] [Language Base Attribute ID List 0x0006] [Bluetooth Profile Descriptor List 0x0009] [Service Name 0x0100] [(MAP MAS) MAS Instance ID 0x0315] [(MAP MAS) Supported Message Types 0x0316]  0.006213
+
+Frame 147: Packet, 44 bytes on wire (352 bits), 44 bytes captured (352 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.440069000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.440069000 UTC
+    Epoch Arrival Time: 1786325019.440069000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 6.213000 milliseconds]
+    [Time delta from previous displayed frame: 6.213000 milliseconds]
+    [Time since reference or first frame: 53.694817000 seconds]
+    Frame Number: 147
+    Frame Length: 44 bytes (352 bits)
+    Capture Length: 44 bytes (352 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 40
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 36
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x0015
+    Parameter Length: 31
+    Service Search Pattern: Message Access Server
+        Data Element: Sequence uint8 3 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 3
+            Data Value
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: Message Access Server (0x1132)
+    Maximum Attribute Byte Count: 128
+    Attribute ID List
+        Data Element: Sequence uint8 21 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 21
+            Data Value
+                Attribute ID: Service Class ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Class ID List (0x0001)
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Language Base Attribute ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Language Base Attribute ID List (0x0006)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+                Attribute ID: Service Name 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Name (0x0100)
+                Attribute ID: MAS Instance ID (MAP MAS) 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: MAS Instance ID (0x0315)
+                Attribute ID: Supported Message Types (MAP MAS) 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Supported Message Types (0x0316)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    148 53.694894      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      18     Sent Service Search Attribute Response                          0.000077
+
+Frame 148: Packet, 18 bytes on wire (144 bits), 18 bytes captured (144 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.440146000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.440146000 UTC
+    Epoch Arrival Time: 1786325019.440146000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 77.000 microseconds]
+    [Time delta from previous displayed frame: 77.000 microseconds]
+    [Time since reference or first frame: 53.694894000 seconds]
+    Frame Number: 148
+    Frame Length: 18 bytes (144 bits)
+    Capture Length: 18 bytes (144 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 14
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 10
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x0015
+    Parameter Length: 5
+    Attribute List Byte Count: 2
+    Attribute Lists [count =  0]
+        Data Element: Sequence uint8 0 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 0
+            Data Value: MISSING
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    150 53.701095      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      52     Rcvd Service Search Attribute Request : Unknown: [Service Class ID List 0x0001] [Protocol Descriptor List 0x0004] [Language Base Attribute ID List 0x0006] [Bluetooth Profile Descriptor List 0x0009] [Service Name 0x0100]  0.002486
+
+Frame 150: Packet, 52 bytes on wire (416 bits), 52 bytes captured (416 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.446347000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.446347000 UTC
+    Epoch Arrival Time: 1786325019.446347000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 2.486000 milliseconds]
+    [Time delta from previous displayed frame: 6.201000 milliseconds]
+    [Time since reference or first frame: 53.701095000 seconds]
+    Frame Number: 150
+    Frame Length: 52 bytes (416 bits)
+    Capture Length: 52 bytes (416 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 48
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 44
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x0016
+    Parameter Length: 39
+    Service Search Pattern: Unknown
+        Data Element: Sequence uint8 17 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 17
+            Data Value
+                Data Element: UUID 16 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .100 = Data Element Size: 16 bytes (4)
+                    Data Value
+                        Value: Custom UUID: 00000000decafadedecadeafdecacafe (Unknown)
+    Maximum Attribute Byte Count: 128
+    Attribute ID List
+        Data Element: Sequence uint8 15 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 15
+            Data Value
+                Attribute ID: Service Class ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Class ID List (0x0001)
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Language Base Attribute ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Language Base Attribute ID List (0x0006)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+                Attribute ID: Service Name 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Name (0x0100)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    151 53.701154      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      18     Sent Service Search Attribute Response                          0.000059
+
+Frame 151: Packet, 18 bytes on wire (144 bits), 18 bytes captured (144 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.446406000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.446406000 UTC
+    Epoch Arrival Time: 1786325019.446406000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 59.000 microseconds]
+    [Time delta from previous displayed frame: 59.000 microseconds]
+    [Time since reference or first frame: 53.701154000 seconds]
+    Frame Number: 151
+    Frame Length: 18 bytes (144 bits)
+    Capture Length: 18 bytes (144 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 14
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 10
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x0016
+    Parameter Length: 5
+    Attribute List Byte Count: 2
+    Attribute Lists [count =  0]
+        Data Element: Sequence uint8 0 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 0
+            Data Value: MISSING
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    152 53.722350      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      52     Rcvd Service Search Attribute Request : Unknown: [Service Class ID List 0x0001] [Protocol Descriptor List 0x0004] [Language Base Attribute ID List 0x0006] [Bluetooth Profile Descriptor List 0x0009] [Service Name 0x0100]  0.021196
+
+Frame 152: Packet, 52 bytes on wire (416 bits), 52 bytes captured (416 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.467602000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.467602000 UTC
+    Epoch Arrival Time: 1786325019.467602000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 21.196000 milliseconds]
+    [Time delta from previous displayed frame: 21.196000 milliseconds]
+    [Time since reference or first frame: 53.722350000 seconds]
+    Frame Number: 152
+    Frame Length: 52 bytes (416 bits)
+    Capture Length: 52 bytes (416 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 48
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 44
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x0017
+    Parameter Length: 39
+    Service Search Pattern: Unknown
+        Data Element: Sequence uint8 17 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 17
+            Data Value
+                Data Element: UUID 16 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .100 = Data Element Size: 16 bytes (4)
+                    Data Value
+                        Value: Custom UUID: fa592c6e5e85410e8a7e5d6373117d39 (Unknown)
+    Maximum Attribute Byte Count: 128
+    Attribute ID List
+        Data Element: Sequence uint8 15 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 15
+            Data Value
+                Attribute ID: Service Class ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Class ID List (0x0001)
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Language Base Attribute ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Language Base Attribute ID List (0x0006)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+                Attribute ID: Service Name 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Name (0x0100)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    153 53.722404      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      18     Sent Service Search Attribute Response                          0.000054
+
+Frame 153: Packet, 18 bytes on wire (144 bits), 18 bytes captured (144 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.467656000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.467656000 UTC
+    Epoch Arrival Time: 1786325019.467656000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 54.000 microseconds]
+    [Time delta from previous displayed frame: 54.000 microseconds]
+    [Time since reference or first frame: 53.722404000 seconds]
+    Frame Number: 153
+    Frame Length: 18 bytes (144 bits)
+    Capture Length: 18 bytes (144 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 14
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 10
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x0017
+    Parameter Length: 5
+    Attribute List Byte Count: 2
+    Attribute Lists [count =  0]
+        Data Element: Sequence uint8 0 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 0
+            Data Value: MISSING
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    155 53.728620      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      52     Rcvd Service Search Attribute Request : Unknown: [Service Class ID List 0x0001] [Protocol Descriptor List 0x0004] [Language Base Attribute ID List 0x0006] [Bluetooth Profile Descriptor List 0x0009] [Service Name 0x0100]  0.002508
+
+Frame 155: Packet, 52 bytes on wire (416 bits), 52 bytes captured (416 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.473872000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.473872000 UTC
+    Epoch Arrival Time: 1786325019.473872000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 2.508000 milliseconds]
+    [Time delta from previous displayed frame: 6.216000 milliseconds]
+    [Time since reference or first frame: 53.728620000 seconds]
+    Frame Number: 155
+    Frame Length: 52 bytes (416 bits)
+    Capture Length: 52 bytes (416 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 48
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 44
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x0018
+    Parameter Length: 39
+    Service Search Pattern: Unknown
+        Data Element: Sequence uint8 17 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 17
+            Data Value
+                Data Element: UUID 16 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .100 = Data Element Size: 16 bytes (4)
+                    Data Value
+                        Value: Custom UUID: 453994d5d58b96f96616b37f586ba2ec (Unknown)
+    Maximum Attribute Byte Count: 128
+    Attribute ID List
+        Data Element: Sequence uint8 15 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 15
+            Data Value
+                Attribute ID: Service Class ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Class ID List (0x0001)
+                Attribute ID: Protocol Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Protocol Descriptor List (0x0004)
+                Attribute ID: Language Base Attribute ID List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Language Base Attribute ID List (0x0006)
+                Attribute ID: Bluetooth Profile Descriptor List 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Bluetooth Profile Descriptor List (0x0009)
+                Attribute ID: Service Name 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Name (0x0100)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    156 53.728691      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      18     Sent Service Search Attribute Response                          0.000071
+
+Frame 156: Packet, 18 bytes on wire (144 bits), 18 bytes captured (144 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.473943000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.473943000 UTC
+    Epoch Arrival Time: 1786325019.473943000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 71.000 microseconds]
+    [Time delta from previous displayed frame: 71.000 microseconds]
+    [Time since reference or first frame: 53.728691000 seconds]
+    Frame Number: 156
+    Frame Length: 18 bytes (144 bits)
+    Capture Length: 18 bytes (144 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 14
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 10
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x0018
+    Parameter Length: 5
+    Attribute List Byte Count: 2
+    Attribute Lists [count =  0]
+        Data Element: Sequence uint8 0 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 0
+            Data Value: MISSING
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    157 53.734804      Alpsalpine_20:52:99 (HandsFreeLink) localhost ()          SDP      41     Rcvd Service Search Attribute Request : PnP Information: [Service Description 0x0101] [(DID) Vendor ID 0x0201] [(DID) Product ID 0x0202] [(DID) Version 0x0203] [(DID) Primary Record 0x0204] [(DID) Vendor ID Source 0x0205]  0.006113
+
+Frame 157: Packet, 41 bytes on wire (328 bits), 41 bytes captured (328 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.480056000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.480056000 UTC
+    Epoch Arrival Time: 1786325019.480056000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 6.113000 milliseconds]
+    [Time delta from previous displayed frame: 6.113000 milliseconds]
+    [Time since reference or first frame: 53.734804000 seconds]
+    Frame Number: 157
+    Frame Length: 41 bytes (328 bits)
+    Capture Length: 41 bytes (328 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Rx Packet (5)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..10 .... .... .... = PB Flag: First Automatically Flushable Packet (2)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 37
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Source Device Name: HandsFreeLink]
+    [Source Role: Central (1)]
+    [Destination BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination Device Name: ]
+    [Destination Role: Peripheral (2)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 33
+    CID: Dynamically Allocated Channel (0x0041)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Request (0x06)
+    Transaction Id: 0x0019
+    Parameter Length: 28
+    Service Search Pattern: PnP Information
+        Data Element: Sequence uint8 3 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 3
+            Data Value
+                Data Element: UUID 2 bytes
+                    0001 1... = Data Element Type: UUID (3)
+                    .... .001 = Data Element Size: 2 bytes (1)
+                    Data Value
+                        Value: UUID: PnP Information (0x1200)
+    Maximum Attribute Byte Count: 512
+    Attribute ID List
+        Data Element: Sequence uint8 18 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 18
+            Data Value
+                Attribute ID: Service Description 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Service Description (0x0101)
+                Attribute ID: Vendor ID (DID) 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Vendor ID (0x0201)
+                Attribute ID: Product ID (DID) 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Product ID (0x0202)
+                Attribute ID: Version (DID) 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Version (0x0203)
+                Attribute ID: Primary Record (DID) 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Primary Record (0x0204)
+                Attribute ID: Vendor ID Source (DID) 
+                    Data Element: Unsigned Integer 2 bytes
+                        0000 1... = Data Element Type: Unsigned Integer (1)
+                        .... .001 = Data Element Size: 2 bytes (1)
+                        Data Value
+                            Attribute ID: Vendor ID Source (0x0205)
+    Continuation State: no (00)
+
+No.     Time           Source                Destination           Protocol Length Info                                                            Delta time
+    158 53.734869      localhost ()          Alpsalpine_20:52:99 (HandsFreeLink) SDP      49     Sent Service Search Attribute Response                          0.000065
+
+Frame 158: Packet, 49 bytes on wire (392 bits), 49 bytes captured (392 bits)
+    Encapsulation type: Bluetooth Linux Monitor (159)
+    Arrival Time: Aug  9, 2026 21:23:39.480121000 EDT
+    UTC Arrival Time: Aug 10, 2026 01:23:39.480121000 UTC
+    Epoch Arrival Time: 1786325019.480121000
+    [Time shift for this packet: 0.000000000 seconds]
+    [Time delta from previous captured frame: 65.000 microseconds]
+    [Time delta from previous displayed frame: 65.000 microseconds]
+    [Time since reference or first frame: 53.734869000 seconds]
+    Frame Number: 158
+    Frame Length: 49 bytes (392 bits)
+    Capture Length: 49 bytes (392 bits)
+    [Frame is marked: False]
+    [Frame is ignored: False]
+    [Protocols in frame: bluetooth:hci_mon:bthci_acl:btl2cap:btsdp]
+    Character encoding: ASCII (0)
+Bluetooth
+    [Source: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Destination: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+Bluetooth Linux Monitor Transport
+    [Adapter ID: 0]
+    [Opcode: ACL Tx Packet (4)]
+Bluetooth HCI ACL Packet
+    .... 0000 0000 1011 = Connection Handle: 0x00b
+    ..00 .... .... .... = PB Flag: First Non-automatically Flushable Packet (0)
+    00.. .... .... .... = BC Flag: Point-To-Point (0)
+    Data Total Length: 45
+    Data
+    [Connect in frame: 26]
+    [Source BD_ADDR: 00:00:00_00:00:00 (00:00:00:00:00:00)]
+    [Source Device Name: ]
+    [Source Role: Peripheral (2)]
+    [Destination BD_ADDR: Alpsalpine_20:52:99 (fc:62:b9:20:52:99)]
+    [Destination Device Name: HandsFreeLink]
+    [Destination Role: Central (1)]
+    [Last Role Change in Frame: 23]
+    [Current Mode: Active Mode (0)]
+    [Last Mode Change in Frame: 26]
+Bluetooth L2CAP Protocol
+    Length: 41
+    CID: Dynamically Allocated Channel (0x0040)
+    [Connect in frame: 122]
+    [Disconnect in frame: 160]
+    [PSM: SDP (0x0001)]
+Bluetooth SDP Protocol
+    PDU: Service Search Attribute Response (0x07)
+    Transaction Id: 0x0019
+    Parameter Length: 36
+    Attribute List Byte Count: 33
+    Attribute Lists [count =  1]
+        Data Element: Sequence uint8 31 bytes
+            0011 0... = Data Element Type: Sequence (6)
+            .... .101 = Data Element Size: uint8 (5)
+            Data Element Var Size: 31
+            Data Value
+                Attribute List [count =  5] (PnP Information)
+                    Data Element: Sequence uint8 29 bytes
+                        0011 0... = Data Element Type: Sequence (6)
+                        .... .101 = Data Element Size: uint8 (5)
+                        Data Element Var Size: 29
+                        Data Value
+                            Service Attribute: (DID) Vendor ID (0x201), value = Linux Foundation (0x1d6b)
+                                Attribute ID: Vendor ID
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Vendor ID (0x0201)
+                                Value
+                            Service Attribute: (DID) Product ID (0x202), value = Unknown (0x0246)
+                                Attribute ID: Product ID
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Product ID (0x0202)
+                                Value
+                            Service Attribute: (DID) Version (0x203), value = 5.5.2 (0x0552)
+                                Attribute ID: Version
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Version (0x0203)
+                                Value
+                            Service Attribute: (DID) Primary Record (0x204), value = true
+                                Attribute ID: Primary Record
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Primary Record (0x0204)
+                                Value
+                            Service Attribute: (DID) Vendor ID Source (0x205), value = USB Implementer's Forum (0x0002)
+                                Attribute ID: Vendor ID Source
+                                    Data Element: Unsigned Integer 2 bytes
+                                        0000 1... = Data Element Type: Unsigned Integer (1)
+                                        .... .001 = Data Element Size: 2 bytes (1)
+                                        Data Value
+                                            Attribute ID: Vendor ID Source (0x0205)
+                                Value
+    Continuation State: no (00)
