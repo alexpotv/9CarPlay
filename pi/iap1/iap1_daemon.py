@@ -124,6 +124,32 @@ CMD_RET_FID_TOKEN_VALUE_ACKS = 0x3A  # iPod-to-Device: [transIdHi, transIdLo, nu
 CMD_END_IDPS = 0x3B                  # Device-to-iPod: [transIdHi, transIdLo, accEndIDPSStatus].
 CMD_IDPS_STATUS = 0x3C               # iPod-to-Device: [transIdHi, transIdLo, status].
 
+# ---- Lingo capability discovery — spec Commands 0x4B/0x4C. Sent by the accessory once per Lingo
+# it's interested in (General, Simple Remote, Display Remote, ...), each on its own request/reply
+# — observed live 2026-08-10 immediately after IDPS+auth: the accessory retried this repeatedly
+# with an incrementing LingoID (0x00, 0x02, 0x03, ...) since we never answered. ----
+CMD_GET_IPOD_OPTIONS_FOR_LINGO = 0x4B  # Device-to-iPod: spec payload is just [LingoId] (1 byte),
+                                        # though this head unit's actual on-wire request is 3
+                                        # bytes ([transIdHi, transIdLo, LingoId]) — an
+                                        # undocumented extension beyond the base spec, consistent
+                                        # with the same transID-prefix convention used for
+                                        # StartIDPS/SetFIDTokenValues/EndIDPS. We read LingoId as
+                                        # the LAST payload byte so this is robust to either shape.
+CMD_RET_IPOD_OPTIONS_FOR_LINGO = 0x4C  # iPod-to-Device: [LingoId, 8 option bits, big-endian]
+                                        # (spec Table 2-112 — no transID slot exists here, so our
+                                        # reply doesn't echo one, matching the base spec exactly).
+
+# Spec Table 2-110's per-Lingo option bitmasks — bit N means "iPod supports feature N for this
+# Lingo." Every Lingo defaults to 0 (no special capabilities — we don't implement audio/video/
+# remote-control features) EXCEPT General Lingo (0x00), where bit 0x0D, "Communication with
+# iPhone OS 3.x applications," is set — this is almost certainly the flag that gates whether the
+# accessory will even attempt EA-style app-session communication (OpenDataSessionForProtocol,
+# General Lingo cmd 0x3F) with us at all, which is the whole point of this exercise.
+LINGO_GENERAL_OPTIONS_COMM_WITH_APPS = 1 << 0x0D
+LINGO_OPTIONS = {
+    LINGO_GENERAL: LINGO_GENERAL_OPTIONS_COMM_WITH_APPS,
+}
+
 SYNC_SHORT = SYNC[1:]  # bare 0x55 — the real framing for every non-UART transport, per spec.
 
 
@@ -336,6 +362,16 @@ def build_idps_status(trans_id: int, status: int = 0x00) -> bytes:
     return build_packet(LINGO_GENERAL, CMD_IDPS_STATUS, payload)
 
 
+# ---- Lingo capability discovery (spec Commands 0x4B/0x4C) ----
+
+def build_ret_ipod_options_for_lingo(lingo_id: int) -> bytes:
+    """Spec Table 2-112: [LingoId, 8 option bits big-endian]. Options come from LINGO_OPTIONS,
+    defaulting to 0 (no special capabilities) for any Lingo we don't have an entry for."""
+    options = LINGO_OPTIONS.get(lingo_id, 0)
+    payload = bytes([lingo_id]) + struct.pack(">Q", options)
+    return build_packet(LINGO_GENERAL, CMD_RET_IPOD_OPTIONS_FOR_LINGO, payload)
+
+
 # ---- Device (MFi) authentication (spec Commands 0x14-0x19) ----
 
 def build_get_dev_authentication_info() -> bytes:
@@ -495,6 +531,12 @@ def process_rx(state: State, ep_in_fd):
                 print(f"  -> RetDevAuthenticationSignature ({len(payload)}-byte signature) — "
                       "accepting unconditionally (see module docstring)")
                 os.write(ep_in_fd, build_ack_dev_authentication_status(0x00))
+            elif lingo == LINGO_GENERAL and cmd == CMD_GET_IPOD_OPTIONS_FOR_LINGO:
+                lingo_id = payload[-1]
+                options = LINGO_OPTIONS.get(lingo_id, 0)
+                print(f"  -> GetiPodOptionsForLingo (lingo=0x{lingo_id:02x}) — replying with "
+                      f"options=0x{options:016x}")
+                os.write(ep_in_fd, build_ret_ipod_options_for_lingo(lingo_id))
             elif lingo == LINGO_GENERAL and cmd in REQUEST_HANDLERS:
                 resp = REQUEST_HANDLERS[cmd]()
                 print(f"  -> recognized request cmd=0x{cmd:02x}, replying")
