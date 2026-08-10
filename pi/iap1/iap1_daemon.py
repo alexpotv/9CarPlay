@@ -335,23 +335,44 @@ REQUEST_HANDLERS = {
 }
 
 
-def build_app_list_announce() -> bytes:
-    """Speculative placeholder — see module docstring. Encodes PHONE_IDENTITY plus each entry
-    in APPS as NUL-separated ASCII fields, matching the field order
-    SetServerVRAppData(ProtocolName, BundleId, URL, AppID) logs on the head unit side, so a raw
-    hex/string dump of a live capture is at least easy to eyeball against this if it does turn
-    out to resemble the real mechanism.
+def build_app_announce(app: dict) -> bytes:
+    """Speculative placeholder — see module docstring. One packet per app: NUL-separated
+    ProtocolName/BundleId/URL followed by a 4-byte AppID, matching SetServerVRAppData(ProtocolName,
+    BundleId, URL, AppID)'s one-app-per-call signature confirmed by decompiling FUN_00076550
+    (references/cr-v/iap.md, "Resolved: the app whitelist gate") — NOT a batched multi-app packet;
+    call this once per entry in APPS. The exact Lingo/Cmd IDs below remain an unconfirmed guess
+    (SetServerVRAppData is reached only via cross-process IPC through IPILib.dll in the firmware,
+    which hasn't been decompiled) — but the field shape (one app, NUL-separated strings + AppID)
+    is now backed by a real decompile, not just a guess.
     """
-    parts = [
-        PHONE_IDENTITY["manufacturer"],
-        PHONE_IDENTITY["model"],
-    ]
-    for app in APPS:
-        parts += [app["protocol_name"], app["bundle_id"], app["url"]]
+    parts = [app["protocol_name"], app["bundle_id"], app["url"]]
     payload = ("\x00".join(parts) + "\x00").encode("ascii", errors="replace")
-    for app in APPS:
-        payload += struct.pack("<I", app["app_id"])
+    payload += struct.pack("<I", app["app_id"])
     return build_packet(LINGO_APP_LIST_PLACEHOLDER, CMD_APP_LIST_ANNOUNCE, payload)
+
+
+def send_proactive_handshake(ep_in_fd):
+    """Sends an unprompted "here's who I am, here's what apps I have" announcement immediately on
+    connection, instead of waiting to be asked.
+
+    Why: iap1_daemon.py/btsdp_iap.py were purely reactive — every response_*() builder only ever
+    fires in reply to a request the head unit sends first. Across every live BT trial so far, the
+    head unit has NEVER sent CMD_REQUEST_IDENTIFY (or anything but the CMD_STATUS_POLL heartbeat)
+    — meaning the old code's app-list announcement, gated behind having first seen an identify
+    request (`state.identify_seen`), was dead code over this transport: it could never fire.
+    Separately, references/cr-v/iap.md's traced NotifyReceiveApp.../CheckAppAuthen call chain
+    (2026-08-10) found the head unit matches an incoming launch request's "type" field against a
+    list of apps already registered via SetServerVRAppData — if nothing has been registered, that
+    match fails and CheckAppAuthen is never even reached, which independently explains a silent
+    "Could not launch app" with no distinguishing wire traffic, exactly what's been observed.
+    This mirrors Apple's own EA framework model (the phone announces which apps opened accessory
+    sessions; the accessory doesn't poll for it) and costs nothing to try regardless of whether the
+    exact wire encoding below turns out to be correct — the mechanical fix (send instead of waiting
+    for a trigger that never arrives) is correct either way.
+    """
+    os.write(ep_in_fd, response_ack_identify())
+    for app in APPS:
+        os.write(ep_in_fd, build_app_announce(app))
 
 
 # ---- runtime ----
@@ -368,7 +389,6 @@ class State:
     def __init__(self, capture_path, unclassified_path):
         self.rx_buf = bytearray()
         self.identify_seen = False
-        self.app_list_sent = False
         self.capture_fp = open(capture_path, "ab")
         self.unclassified_fp = open(unclassified_path, "ab")
 
@@ -451,11 +471,6 @@ def process_rx(state: State, ep_in_fd):
             else:
                 print(f"  -> unrecognized lingo/cmd combination, no reply sent "
                       f"(logged to {state.capture_fp.name})")
-            if state.identify_seen and not state.app_list_sent:
-                print("  -> identify has been seen at least once; sending speculative "
-                      "app-list announcement (see module docstring)")
-                os.write(ep_in_fd, build_app_list_announce())
-                state.app_list_sent = True
             progressed = True
         elif skip:
             garbage = bytes(state.rx_buf[:skip])
@@ -548,6 +563,16 @@ def main():
                     except OSError as reopen_err:
                         print(f"[bulk] reopen after ENABLE failed: {reopen_err} — will fall "
                               "back to reopening on the next read error", file=sys.stderr)
+                    else:
+                        # Host has enumerated the gadget — send our identify + app announcement
+                        # now instead of waiting to be asked (see send_proactive_handshake()'s
+                        # docstring; same rationale as btsdp_iap.py's Bluetooth side).
+                        print("[bulk] sending proactive identify + app announcement")
+                        try:
+                            send_proactive_handshake(ep_in_fd)
+                        except OSError as send_err:
+                            print(f"[bulk] proactive handshake send failed: {send_err}",
+                                  file=sys.stderr)
 
         try:
             chunk = os.read(ep_out_fd, 16384)

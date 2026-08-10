@@ -95,6 +95,10 @@ def rfcomm_session(fd, device):
     state = State(capture_path, unclassified_path)
     ep_in_fd = sock.fileno()  # os.write() works on a real socket fd exactly like a bulk-IN fd.
 
+    print("[btsdp-iap] Sending proactive identify + app announcement (not waiting to be asked "
+          "— see iap1_daemon.py's send_proactive_handshake() docstring)")
+    iap1_daemon.send_proactive_handshake(ep_in_fd)
+
     try:
         while True:
             try:
