@@ -127,7 +127,7 @@ CMD_RETURN_MODEL_NUM = 0x0E           # was 0x20
 #     both guesses, chosen only because they're the most spec-convention-consistent choice.
 CMD_UNKNOWN_0X11 = 0x11
 CMD_DEVICE_ID_REPLY_GUESS_0X12 = 0x12
-CMD_0X11_REPLY_MODE = "unknown_id"  # or "device_id"
+CMD_0X11_REPLY_MODE = "device_id"  # or "unknown_id"
 
 # ---- Device (MFi) authentication — spec Commands 0x14-0x19. We initiate this ourselves right
 # after IDPS completes (see CMD_END_IDPS's handling in process_rx) and unconditionally accept
