@@ -101,6 +101,16 @@ def handle_at_command(line, sock):
         reply("OK")
     elif upper.startswith("AT+VGS") or upper.startswith("AT+VGM"):
         reply("OK")
+    elif upper.startswith("AT+XAPL"):
+        # Apple's proprietary AT extension: the HF side (head unit) announces its own
+        # vendor-product-version and asks the AG to identify as Apple-compatible. A real
+        # iPhone answers with "+XAPL=iPhone,<features>" before OK — falling through to the
+        # generic catch-all here (bare OK, no +XAPL line) is suspected to be why the head
+        # unit's Apple-accessory detection never considers this device a phone. Features
+        # bitmap 7 (battery level + docked/undocked + Siri status bits) matches what other
+        # iPhone-emulation implementations (e.g. PulseAudio's bluez5 HFP backend) send.
+        reply("+XAPL=iPhone,7")
+        reply("OK")
     else:
         # Best-effort: acknowledge anything we don't explicitly handle so
         # the HF side's SLC establishment isn't blocked on an unrecognized
