@@ -98,12 +98,36 @@ CMD_REQUEST_IDENTIFY = 0x00     # iPod-to-Device only; the accessory never sends
 CMD_ACK = 0x02                  # iPod-to-Device: generic ack. payload = [status, ackedCmdId].
 CMD_REQUEST_IPOD_NAME = 0x07
 CMD_RETURN_IPOD_NAME = 0x08
-CMD_REQUEST_SOFTWARE_VERSION = 0x0B
-CMD_RETURN_SOFTWARE_VERSION = 0x0C
-CMD_REQUEST_SERIAL_NUM = 0x0F
-CMD_RETURN_SERIAL_NUM = 0x10
-CMD_REQUEST_MODEL_NUM = 0x1F
-CMD_RETURN_MODEL_NUM = 0x20
+# Re-verified 2026-08-10 against spec Table 2-9 (the full General Lingo command master table,
+# 0x00-0x4E) while chasing cmd=0x11 — these three were wrong, left over from this file's original
+# pre-verification guesses and never corrected during the IDPS/auth rewrite. 0x1F in particular
+# collides with AckiPodAuthenticationStatus, a command we ourselves send.
+CMD_REQUEST_SOFTWARE_VERSION = 0x09   # was 0x0B
+CMD_RETURN_SOFTWARE_VERSION = 0x0A    # was 0x0C
+CMD_REQUEST_SERIAL_NUM = 0x0B         # was 0x0F
+CMD_RETURN_SERIAL_NUM = 0x0C          # was 0x10
+CMD_REQUEST_MODEL_NUM = 0x0D          # was 0x1F (collided with AckiPodAuthenticationStatus)
+CMD_RETURN_MODEL_NUM = 0x0E           # was 0x20
+
+# ---- cmd=0x11 — officially "Reserved" in spec Table 2-9 (0x11-0x12 unassigned in any public
+# protocol version), but this head unit sends it, once, right after acking StartIDPS, every trial.
+# Two hypotheses, both implemented, toggled by CMD_0X11_REPLY_MODE for live A/B testing:
+#   - "unknown_id" (default, safe): reply with the spec-defined generic ACK, status=0x05 ("ERROR:
+#     Unknown ID" — Table 2-13), honestly telling the accessory we don't recognize this command
+#     instead of staying silent (which is indistinguishable from a dead link). Zero risk of a
+#     malformed/misinterpreted payload.
+#   - "device_id" (speculative): Honda's own patent (US9116563B2) describes a pairing sequence
+#     where, right after the physical/link-level check, "the phone transmits a device ID (serial
+#     number, IMEI, or similar)" — a step with no equivalent in Apple's public spec, consistent
+#     with 0x11 living in an officially-unassigned slot because it's a Honda-proprietary addition.
+#     cmd=0x11's position in the observed sequence (immediately after StartIDPS's ACK, before any
+#     Lingo capability negotiation) matches this patent step closely. The exact reply command
+#     number and payload shape are NOT specified anywhere (patents describe behavior, not wire
+#     bytes) — 0x12 (the other half of the reserved pair) and a serial-number-shaped string are
+#     both guesses, chosen only because they're the most spec-convention-consistent choice.
+CMD_UNKNOWN_0X11 = 0x11
+CMD_DEVICE_ID_REPLY_GUESS_0X12 = 0x12
+CMD_0X11_REPLY_MODE = "unknown_id"  # or "device_id"
 
 # ---- Device (MFi) authentication — spec Commands 0x14-0x19. We initiate this ourselves right
 # after IDPS completes (see CMD_END_IDPS's handling in process_rx) and unconditionally accept
@@ -320,6 +344,29 @@ REQUEST_HANDLERS = {
 }
 
 
+# ---- cmd=0x11 (see CMD_0X11_REPLY_MODE's docstring) ----
+
+def build_ack_unknown_id(acked_cmd: int) -> bytes:
+    """Generic ACK, status=0x05 ("ERROR: Unknown ID", spec Table 2-13) — the "unknown_id" mode."""
+    return build_ack(0x05, acked_cmd)
+
+
+def build_device_id_reply_guess() -> bytes:
+    """Speculative "device_id" mode — see CMD_0X11_REPLY_MODE's docstring for the patent-derived
+    reasoning and the explicit caveats about this being a guess at both the reply command number
+    and payload shape. Reuses the same serial-number-shaped string as response_serial_num(),
+    null-terminated ASCII, since that's the closest fit to the patent's "serial number, IMEI, or
+    similar" description already available in this file."""
+    payload = GENERAL_LINGO_IDENTITY["serial_number"].encode("ascii") + b"\x00"
+    return build_packet(LINGO_GENERAL, CMD_DEVICE_ID_REPLY_GUESS_0X12, payload)
+
+
+def response_unknown_0x11() -> bytes:
+    if CMD_0X11_REPLY_MODE == "device_id":
+        return build_device_id_reply_guess()
+    return build_ack_unknown_id(CMD_UNKNOWN_0X11)
+
+
 # ---- IDPS (spec Commands 0x38-0x3C) ----
 
 def build_ack(status: int, acked_cmd: int) -> bytes:
@@ -509,6 +556,10 @@ def process_rx(state: State, ep_in_fd):
                 trans_id = (payload[0] << 8) | payload[1]
                 print(f"  -> StartIDPS (transID={trans_id}) — acking")
                 os.write(ep_in_fd, build_ack(0x00, CMD_START_IDPS))
+            elif lingo == LINGO_GENERAL and cmd == CMD_UNKNOWN_0X11:
+                print(f"  -> unknown vendor cmd=0x11 (mode={CMD_0X11_REPLY_MODE}) — see "
+                      "CMD_0X11_REPLY_MODE's docstring")
+                os.write(ep_in_fd, response_unknown_0x11())
             elif lingo == LINGO_GENERAL and cmd == CMD_SET_FID_TOKEN_VALUES:
                 trans_id, fields = parse_fid_token_values(payload)
                 print(f"  -> SetFIDTokenValues (transID={trans_id}, {len(fields)} token(s)):")
