@@ -53,6 +53,7 @@ import sys
 import time
 
 from apps import APPS, GENERAL_LINGO_IDENTITY, PHONE_IDENTITY
+from markers import session_suffix
 
 # ---- FunctionFS constants (uapi/linux/usb/functionfs.h) — same values used in
 # pi/mirrorlink-ncm/mirrorlink_usb_cmd_listener.py and pi/aoa-gadget/aoa_gadget.c. ----
@@ -91,12 +92,23 @@ CMD_RETURN_SERIAL_NUM = 0x10
 CMD_REQUEST_MODEL_NUM = 0x1F
 CMD_RETURN_MODEL_NUM = 0x20
 
+# Head-unit-originated status/heartbeat poll — see iap.md, "cmd=0x38 confirmed as a periodic
+# post-launch retry/status poll." Consistently observed arriving as bare 0x55 (SYNC_SHORT below),
+# never the full 0xFF 0x55 sync every other packet in this file uses.
+CMD_STATUS_POLL = 0x38
+CMD_STATUS_POLL_ACK = 0x39
+
+# See response_status_poll_ack()'s docstring.
+STATUS_POLL_REPLY_MODE = "mirror"
+
 # Deliberately outside any Lingo range documented in the public General Lingo family — a
 # placeholder channel for the app-list announcement described in the module docstring, chosen
 # purely to be distinctive and greppable in a live capture, not a claim about Honda's real Lingo
 # assignment for this data.
 LINGO_APP_LIST_PLACEHOLDER = 0xF0
 CMD_APP_LIST_ANNOUNCE = 0x01
+
+SYNC_SHORT = SYNC[1:]  # bare 0x55 — CMD_STATUS_POLL's consistent (missing-0xFF) framing
 
 
 def iap1_checksum(body: bytes) -> int:
@@ -112,35 +124,76 @@ def build_packet(lingo: int, cmd: int, payload: bytes = b"") -> bytes:
     return SYNC + body + bytes([checksum])
 
 
+def build_packet_no_sync(lingo: int, cmd: int, payload: bytes = b"") -> bytes:
+    """Same framing as build_packet, but with only the bare SYNC_SHORT (0x55) byte in front,
+    omitting the leading 0xFF — see response_status_poll_ack()'s docstring for why."""
+    body_payload = bytes([lingo, cmd]) + payload
+    length = len(body_payload)
+    body = bytes([length]) + body_payload
+    checksum = iap1_checksum(body)
+    return SYNC_SHORT + body + bytes([checksum])
+
+
+def _parse_at(buf: bytes, header_len: int):
+    """Tries to parse a packet whose sync bytes (header_len of them, already matched at buf[0]) are
+    followed by <LEN><payload...><checksum>. Returns None if more data is needed, "bad_checksum" if
+    a full candidate was available but didn't check out, or (lingo, cmd, payload, total_len)."""
+    if len(buf) < header_len + 1:
+        return None
+    length = buf[header_len]
+    total_len = header_len + 1 + length + 1
+    if len(buf) < total_len:
+        return None
+    body = buf[header_len:header_len + 1 + length]
+    checksum = buf[header_len + 1 + length]
+    if iap1_checksum(body) != checksum:
+        return "bad_checksum"
+    lingo = buf[header_len + 1]
+    cmd = buf[header_len + 2]
+    payload = bytes(buf[header_len + 3:header_len + 1 + length])
+    return lingo, cmd, payload, total_len
+
+
 def try_parse_packet(buf: bytes):
     """Attempts to parse one iAP1 packet from the front of buf.
 
     Returns (lingo, cmd, payload, consumed_bytes) on success, or (None, None, None,
     skip_bytes) if buf doesn't start with a valid packet — skip_bytes is how many bytes to
-    drop before trying again (1, to resync byte-by-byte, unless no sync was found at all, in
-    which case it's len(buf) since nothing recoverable remains).
+    drop before trying again (0 if more data is needed, otherwise how much garbage to discard
+    before the next recoverable sync point).
+
+    Recognizes two sync forms: the full SYNC (0xFF 0x55, used by every command except
+    CMD_STATUS_POLL) and the bare SYNC_SHORT (0x55 alone, CMD_STATUS_POLL's consistent framing —
+    see iap.md, "First live Bluetooth iAP1 packet decoded"). SYNC_SHORT matches are
+    checksum-gated before being accepted, since a bare 0x55 is far more likely to turn up by
+    coincidence in unrelated bytes than the 2-byte full sync is.
     """
-    sync_idx = buf.find(SYNC)
-    if sync_idx == -1:
+    full_idx = buf.find(SYNC)
+    short_idx = buf.find(SYNC_SHORT)
+    if full_idx != -1 and (short_idx == -1 or full_idx <= short_idx):
+        sync_idx, header_len = full_idx, len(SYNC)
+    elif short_idx != -1:
+        sync_idx, header_len = short_idx, len(SYNC_SHORT)
+    else:
+        # No sync candidate at all. Don't blindly discard a trailing 0xFF — it may be the first
+        # half of a full sync split across two reads (see iap.md, "First live Bluetooth iAP1
+        # packet decoded" — this exact scenario caused a real bug previously).
+        if buf[-1:] == SYNC[:1]:
+            return None, None, None, None, len(buf) - 1
         return None, None, None, None, len(buf)
+
     if sync_idx > 0:
         # Garbage before the next sync — let the caller log it as unclassified data, then
         # retry parsing from the sync point.
         return None, None, None, None, sync_idx
-    if len(buf) < 3:
+
+    result = _parse_at(buf, header_len)
+    if result is None:
         return None, None, None, None, 0  # need more data
-    length = buf[2]
-    total_len = 3 + length + 1  # sync(2) + len(1) + payload(length) + checksum(1)
-    if len(buf) < total_len:
-        return None, None, None, None, 0  # need more data
-    body = buf[2:2 + 1 + length]
-    checksum = buf[2 + 1 + length]
-    if iap1_checksum(body) != checksum:
-        # Bad checksum — treat the sync bytes as coincidental, skip past them and resync.
-        return None, None, None, None, 2
-    lingo = buf[3]
-    cmd = buf[4]
-    payload = bytes(buf[5:2 + 1 + length])
+    if result == "bad_checksum":
+        # Coincidental sync byte(s) — treat just the matched sync as garbage and resync.
+        return None, None, None, None, header_len
+    lingo, cmd, payload, total_len = result
     return lingo, cmd, payload, total_len, 0
 
 
@@ -222,6 +275,26 @@ def response_serial_num() -> bytes:
 def response_model_num() -> bytes:
     payload = GENERAL_LINGO_IDENTITY["model_number"].encode("ascii") + b"\x00"
     return build_packet(LINGO_GENERAL, CMD_RETURN_MODEL_NUM, payload)
+
+
+def response_status_poll_ack(payload: bytes) -> bytes:
+    """Replies to a CMD_STATUS_POLL (cmd=0x38), echoing back the received counter payload as
+    CMD_STATUS_POLL_ACK (cmd=0x39) — see iap.md, "cmd=0x38 confirmed as a periodic post-launch
+    retry/status poll." Untested against real hardware (iap.md documented an earlier "tested
+    live: no effect" result, but the code that was supposedly tested was never actually committed
+    — see iap.md's 2026-08-10 comparative re-verification note. Treat this as the first real
+    attempt, not a retest.).
+
+    STATUS_POLL_REPLY_MODE controls framing:
+      - "mirror" (default): omit the leading 0xFF, matching CMD_STATUS_POLL's own observed
+        wire framing (every captured instance arrives as bare 0x55, never 0xFF 0x55) — on the
+        theory that if the head unit's transmit side is consistently short-framed for this
+        command, its receive side might expect the same and silently drop a fully-synced reply.
+      - "full": send a normally-framed (0xFF 0x55 ...) reply like every other packet in this file.
+    """
+    if STATUS_POLL_REPLY_MODE == "mirror":
+        return build_packet_no_sync(LINGO_GENERAL, CMD_STATUS_POLL_ACK, payload)
+    return build_packet(LINGO_GENERAL, CMD_STATUS_POLL_ACK, payload)
 
 
 REQUEST_HANDLERS = {
@@ -310,6 +383,14 @@ def ep0_event_loop(ep0_fd):
     return True, enabled
 
 
+def write_record(fp, ts: float, data: bytes):
+    """Shared timestamped-record framing (double timestamp + uint32 length + raw bytes) used by
+    both the capture and unclassified files, so decode_capture.py can read either with one
+    reader — see read_records() there."""
+    fp.write(struct.pack("<dI", ts, len(data)) + data)
+    fp.flush()
+
+
 def process_rx(state: State, ep_in_fd):
     """Tries to parse as many complete packets as possible out of state.rx_buf, dispatching
     handled ones and logging everything else (both recognized-but-unhandled packets and raw
@@ -322,8 +403,7 @@ def process_rx(state: State, ep_in_fd):
         if consumed:
             pkt_bytes = bytes(state.rx_buf[:consumed])
             del state.rx_buf[:consumed]
-            state.capture_fp.write(pkt_bytes)
-            state.capture_fp.flush()
+            write_record(state.capture_fp, time.time(), pkt_bytes)
             print(f"[rx] iAP1 packet lingo=0x{lingo:02x} cmd=0x{cmd:02x} "
                   f"payload={payload!r}")
             if lingo == LINGO_GENERAL and cmd == CMD_REQUEST_IDENTIFY:
@@ -331,6 +411,10 @@ def process_rx(state: State, ep_in_fd):
                 print("  -> looks like RequestIdentify — replying with AckIdentify "
                       f"(name={GENERAL_LINGO_IDENTITY['ipod_name']!r})")
                 os.write(ep_in_fd, response_ack_identify())
+            elif lingo == LINGO_GENERAL and cmd == CMD_STATUS_POLL:
+                print(f"  -> status-poll (cmd=0x38), replying with ack "
+                      f"(mode={STATUS_POLL_REPLY_MODE})")
+                os.write(ep_in_fd, response_status_poll_ack(payload))
             elif lingo == LINGO_GENERAL and cmd in REQUEST_HANDLERS:
                 resp = REQUEST_HANDLERS[cmd]()
                 print(f"  -> recognized request cmd=0x{cmd:02x}, replying")
@@ -351,9 +435,7 @@ def process_rx(state: State, ep_in_fd):
             print(f"[rx] {len(garbage)} unclassified byte(s) (not a valid iAP1 packet) — "
                   f"logged with timestamp {ts:.3f} for touch-correlation analysis:")
             print(hexdump(garbage))
-            state.unclassified_fp.write(
-                struct.pack("<d", ts) + struct.pack("<I", len(garbage)) + garbage)
-            state.unclassified_fp.flush()
+            write_record(state.unclassified_fp, ts, garbage)
             progressed = True
         # else: need more data, wait for next read
 
@@ -401,7 +483,13 @@ def main():
     print("Now bind the UDC in another shell to start enumeration (or use cycle_usb.sh):")
     print("  echo <udc-name> > /sys/kernel/config/usb_gadget/iap1_0/UDC\n")
 
-    state = State("iap1_capture.bin", "iap1_unclassified.bin")
+    # Fresh, timestamped filenames per launch — a static filename opened in append mode
+    # previously let one trial's data silently mix with every earlier trial's leftovers, which
+    # once produced a marker landing 11.4 hours from the nearest logged packet (see iap.md,
+    # "cmd=0x38 confirmed as a periodic post-launch retry/status poll").
+    suffix = session_suffix()
+    state = State(f"iap1_capture_{suffix}.bin", f"iap1_unclassified_{suffix}.bin")
+    print(f"Session suffix: {suffix} (run markers.py {suffix} alongside this for correlation)")
     print(f"Identified/recognized iAP1 packets -> {state.capture_fp.name}")
     print(f"Unclassified bytes (raw, timestamped) -> {state.unclassified_fp.name}")
     print(f"Phone identity in use: {PHONE_IDENTITY}")

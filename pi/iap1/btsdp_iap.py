@@ -53,6 +53,7 @@ import dbus.service
 from gi.repository import GLib
 
 from iap1_daemon import State, process_rx
+from markers import session_suffix
 
 BUS_NAME = "org.bluez"
 PROFILE_MANAGER_PATH = "/org/bluez"
@@ -66,19 +67,22 @@ IAP_BT_UUID = "00000000-deca-fade-deca-deafdecacafe"
 # simultaneously on the same adapter without any ambiguity about which RFCOMM channel is which.
 RFCOMM_CHANNEL = 2
 
-CAPTURE_PATH = "iap1_bt_capture.bin"
-UNCLASSIFIED_PATH = "iap1_bt_unclassified.bin"
-
 
 def rfcomm_session(fd, device):
     sock = socket.fromfd(fd, socket.AF_BLUETOOTH, socket.SOCK_STREAM)
     sock.setblocking(True)
     print(f"[btsdp-iap] RFCOMM session started from {device}")
 
-    # Fresh State (and thus fresh capture files) per session — same shape as iap1_daemon.py's,
-    # just pointed at BT-specific filenames so a live trial's USB and Bluetooth captures never
-    # collide or get interleaved.
-    state = State(CAPTURE_PATH, UNCLASSIFIED_PATH)
+    # Fresh State (and thus fresh, timestamped, per-session capture files) per connection — same
+    # shape as iap1_daemon.py's, just pointed at BT-specific filenames so a live trial's USB and
+    # Bluetooth captures never collide, and so repeated connections within one trial don't mix
+    # (see iap1_daemon.py's main() for the static-filename bug this pattern avoids).
+    suffix = session_suffix()
+    capture_path = f"iap1_bt_capture_{suffix}.bin"
+    unclassified_path = f"iap1_bt_unclassified_{suffix}.bin"
+    print(f"[btsdp-iap] Session suffix: {suffix} "
+          f"(run markers.py {suffix} alongside this for correlation)")
+    state = State(capture_path, unclassified_path)
     ep_in_fd = sock.fileno()  # os.write() works on a real socket fd exactly like a bulk-IN fd.
 
     try:
@@ -137,8 +141,8 @@ def main():
     manager.RegisterProfile(PROFILE_DBUS_PATH, IAP_BT_UUID, opts)
     print(f"[btsdp-iap] Registered iAP-over-Bluetooth profile (UUID={IAP_BT_UUID}, "
           f"RFCOMM channel={RFCOMM_CHANNEL})")
-    print(f"[btsdp-iap] Recognized/unhandled iAP1 packets -> {CAPTURE_PATH}")
-    print(f"[btsdp-iap] Unclassified bytes (raw, timestamped) -> {UNCLASSIFIED_PATH}")
+    print("[btsdp-iap] Capture/unclassified files are created per-RFCOMM-session as "
+          "iap1_bt_{capture,unclassified}_<suffix>.bin (see rfcomm_session()).")
     print("[btsdp-iap] Waiting for the head unit's SDP search to resolve and an RFCOMM "
           "connection to follow. Run a fresh btmon capture alongside this (see "
           "BTMON_ANALYSIS.md) to confirm.")
