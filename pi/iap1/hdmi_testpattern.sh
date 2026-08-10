@@ -17,9 +17,31 @@ set -euo pipefail
 
 echo "Looking for a way to drive HDMI output..."
 
+# ffplay renders through SDL2, which defaults to looking for an X11/Wayland session. On a
+# headless Pi (no desktop session running) there is none, so SDL falls through to a driver that
+# can't actually put pixels on the HDMI output ("Couldn't find matching render driver") and warns
+# about XDG_RUNTIME_DIR along the way. Fix: point SDL straight at the KMS/DRM output (the same
+# framebuffer console output uses) and make sure XDG_RUNTIME_DIR exists, since SDL still checks
+# for it even in this mode.
+if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -d "${XDG_RUNTIME_DIR:-/nonexistent}" ]]; then
+    export XDG_RUNTIME_DIR="/tmp/xdg-runtime-$(id -u)"
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
+fi
+export SDL_VIDEODRIVER=kmsdrm
+
 if command -v ffmpeg >/dev/null 2>&1 && command -v ffplay >/dev/null 2>&1; then
     echo "Using ffmpeg testsrc via ffplay (fullscreen SMPTE-ish color bars + timestamp)."
-    exec ffplay -f lavfi -i "testsrc=size=1280x720:rate=30" -fs -autoexit -loglevel warning
+    echo "SDL_VIDEODRIVER=$SDL_VIDEODRIVER XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+    # Not exec'd here (unlike the other branches below): a plain call lets us detect ffplay/SDL
+    # failing at runtime (wrong driver, DRM master already held, etc.) and fall through to the
+    # next method instead of the whole script just exiting on a bad exit code.
+    if ffplay -f lavfi -i "testsrc=size=1280x720:rate=30" -fs -autoexit -loglevel warning; then
+        exit 0
+    fi
+    echo "ffplay/kmsdrm failed (are you in the 'video'/'render' group, and is nothing else " >&2
+    echo "holding the DRM master, e.g. a desktop session or another ffplay)? Falling through " >&2
+    echo "to the next method." >&2
 fi
 
 if command -v fbi >/dev/null 2>&1; then
