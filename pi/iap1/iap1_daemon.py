@@ -519,12 +519,31 @@ def process_rx(state: State, ep_in_fd):
                 trans_id = (payload[0] << 8) | payload[1]
                 acc_status = payload[2]
                 print(f"  -> EndIDPS (transID={trans_id}, accEndIDPSStatus={acc_status})")
-                os.write(ep_in_fd, build_idps_status(trans_id, 0x00))
-                if acc_status == 0x00 and not state.idps_done:
-                    state.idps_done = True
-                    print("  -> IDPS complete — initiating authentication "
-                          "(GetDevAuthenticationInfo)")
-                    os.write(ep_in_fd, build_get_dev_authentication_info())
+                if acc_status == 0x00:
+                    # Spec Table 2-94: accEndIDPSStatus=0 -> IDPSStatus=0 (all required tokens
+                    # received, proceed with auth).
+                    os.write(ep_in_fd, build_idps_status(trans_id, 0x00))
+                    if not state.idps_done:
+                        state.idps_done = True
+                        print("  -> IDPS complete — initiating authentication "
+                              "(GetDevAuthenticationInfo)")
+                        os.write(ep_in_fd, build_get_dev_authentication_info())
+                elif acc_status == 0x01:
+                    # Spec Table 2-94: accEndIDPSStatus=1 -> IDPSStatus=4 or 5, NEVER 0 — the
+                    # accessory is asking to reset all IDPS info and retry. Previously this
+                    # branch didn't exist and we always replied 0x00 regardless, which is
+                    # invalid per spec and likely stalled/confused the accessory instead of
+                    # letting it cleanly retry StartIDPS. status=4 grants the retry.
+                    print("  -> accessory asked to reset IDPS and retry — replying "
+                          "IDPSStatus=4, resetting session state")
+                    os.write(ep_in_fd, build_idps_status(trans_id, 0x04))
+                    state.idps_done = False
+                    state.cert_buf = bytearray()
+                    state.auth_retry_counter = 0
+                else:
+                    # accEndIDPSStatus=2: accessory is abandoning IDPS entirely.
+                    print("  -> accessory is abandoning IDPS — replying IDPSStatus=6")
+                    os.write(ep_in_fd, build_idps_status(trans_id, 0x06))
             elif lingo == LINGO_GENERAL and cmd == CMD_RET_DEV_AUTHENTICATION_INFO:
                 handle_ret_dev_authentication_info(state, payload, ep_in_fd)
             elif lingo == LINGO_GENERAL and cmd == CMD_RET_DEV_AUTHENTICATION_SIGNATURE:
