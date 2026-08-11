@@ -22,6 +22,20 @@ out backwards or simply wrong once checked against the real spec:
     IPILib.dll's `IPI_*ServerVREvent` strings), not the general app-launch gate — the proactive
     app-announcement handshake built earlier the same day is removed; it was targeting the wrong
     mechanism entirely.
+  - We now deliberately REFUSE StartIDPS (ACK status=0x04, "Bad Parameter") instead of accepting
+    it. Decompiling NEventWatcher.exe's `ADCL_iAP1_AplReceiveGeneralAckCallback` (the head unit's
+    own handler for processing an incoming ACK) found `if (param_3 < 0x19) { ...process... } else
+    { ...log a FATAL error, drop it... }` — General Lingo command IDs 0x00-0x13ish belong to the
+    original "protocol version 1.00" command set; StartIDPS/EndIDPS/etc. (0x38+) were added much
+    later, in "1.09." The strong working theory is that Honda's ADCL ACK-routing table was sized
+    against the original 1.00 range and never expanded for the 1.09 IDPS extension — meaning an
+    ACK acknowledging StartIDPS (ackedCmdId=0x38, past the 0x19 threshold) can never be correctly
+    processed by their own firmware, regardless of how correctly we frame it. This matches every
+    live symptom observed: SetFIDTokenValues never follows our ACK, and the accessory eventually
+    times out into Lingo-probing and an IDPS reset. Per spec, a status=0x04 ACK tells the accessory
+    "this iPod doesn't support IDPS," which makes it fall back to the older, pre-IDPS
+    IdentifyDeviceLingoes (cmd=0x13, well under the suspect 0x19 threshold) — see CMD_IDENTIFY_
+    DEVICE_LINGOES's handling below. Unconfirmed until tested live.
 
 WHAT IS CONFIDENT vs BEST-EFFORT here:
   - USB gadget enumeration (Apple VID, plausible iPhone PID, vendor-class bulk interface) — same
@@ -96,6 +110,14 @@ OUTGOING_SYNC_MODE = "full"
 CMD_REQUEST_IDENTIFY = 0x00     # iPod-to-Device only; the accessory never sends this to us (it
                                  # already proactively sends StartIDPS on its own — observed live).
 CMD_ACK = 0x02                  # iPod-to-Device: generic ack. payload = [status, ackedCmdId].
+CMD_IDENTIFY_DEVICE_LINGOES = 0x13  # Device-to-iPod, the pre-IDPS identification path (spec
+                                     # Table 2-32): [lingoesSpoken(4B), options(4B), deviceId(4B)],
+                                     # 12 bytes — though every other Honda-originated General Lingo
+                                     # command observed on this head unit carries an extra 2-byte
+                                     # transID prefix ahead of its documented payload, so this is
+                                     # parsed to tolerate either a 12- or 14-byte payload. We now
+                                     # reject StartIDPS specifically so the accessory falls back to
+                                     # this older, sub-0x19 command instead — see module docstring.
 CMD_REQUEST_IPOD_NAME = 0x07
 CMD_RETURN_IPOD_NAME = 0x08
 # Re-verified 2026-08-10 against spec Table 2-9 (the full General Lingo command master table,
@@ -367,12 +389,24 @@ def response_unknown_0x11() -> bytes:
     return build_ack_unknown_id(CMD_UNKNOWN_0X11)
 
 
-# ---- IDPS (spec Commands 0x38-0x3C) ----
-
 def build_ack(status: int, acked_cmd: int) -> bytes:
     """Generic ACK (cmd=0x02): payload = [status, ackedCmdId]. Spec Table 2-12."""
     return build_packet(LINGO_GENERAL, CMD_ACK, bytes([status, acked_cmd]))
 
+
+def parse_identify_device_lingoes(payload: bytes):
+    """Parses an IdentifyDeviceLingoes payload (spec Table 2-32: [lingoesSpoken(4B), options(4B),
+    deviceId(4B)], big-endian, 12 bytes) into (lingoes_spoken, options, device_id). Tolerates a
+    leading 2-byte transID prefix (14-byte payload) — see CMD_IDENTIFY_DEVICE_LINGOES's docstring
+    — by using the last 12 bytes regardless of overall payload length."""
+    body = payload[-12:]
+    lingoes_spoken = int.from_bytes(body[0:4], "big")
+    options = int.from_bytes(body[4:8], "big")
+    device_id = int.from_bytes(body[8:12], "big")
+    return lingoes_spoken, options, device_id
+
+
+# ---- IDPS (spec Commands 0x38-0x3C) ----
 
 def parse_fid_token_values(payload: bytes):
     """Parses a SetFIDTokenValues payload ([transIdHi, transIdLo, numTokens, <fields>], spec Table
@@ -554,8 +588,26 @@ def process_rx(state: State, ep_in_fd):
                   f"payload={payload!r}")
             if lingo == LINGO_GENERAL and cmd == CMD_START_IDPS:
                 trans_id = (payload[0] << 8) | payload[1]
-                print(f"  -> StartIDPS (transID={trans_id}) — acking")
-                os.write(ep_in_fd, build_ack(0x00, CMD_START_IDPS))
+                # Deliberately refusing IDPS (status=0x04, "Bad Parameter") instead of accepting
+                # it — see module docstring for the ADCL ACK-routing-bug hypothesis this tests.
+                # Per spec this tells the accessory "this iPod doesn't support IDPS," which makes
+                # it fall back to IdentifyDeviceLingoes (cmd=0x13) within 800ms.
+                print(f"  -> StartIDPS (transID={trans_id}) — refusing (status=0x04) to force "
+                      "fallback to IdentifyDeviceLingoes")
+                os.write(ep_in_fd, build_ack(0x04, CMD_START_IDPS))
+            elif lingo == LINGO_GENERAL and cmd == CMD_IDENTIFY_DEVICE_LINGOES:
+                lingoes_spoken, options, device_id = parse_identify_device_lingoes(payload)
+                print(f"  -> IdentifyDeviceLingoes (lingoesSpoken=0x{lingoes_spoken:08x}, "
+                      f"options=0x{options:08x}, deviceId=0x{device_id:08x}) — acking")
+                os.write(ep_in_fd, build_ack(0x00, CMD_IDENTIFY_DEVICE_LINGOES))
+                # Spec: device ID 0x00000000 means the accessory doesn't require authentication;
+                # any nonzero ID means it does, and GetDevAuthenticationInfo should follow
+                # identification immediately (mirrors the old EndIDPS-success trigger).
+                if device_id != 0 and not state.idps_done:
+                    state.idps_done = True
+                    print("  -> device requested authentication — initiating "
+                          "(GetDevAuthenticationInfo)")
+                    os.write(ep_in_fd, build_get_dev_authentication_info())
             elif lingo == LINGO_GENERAL and cmd == CMD_UNKNOWN_0X11:
                 print(f"  -> unknown vendor cmd=0x11 (mode={CMD_0X11_REPLY_MODE}) — see "
                       "CMD_0X11_REPLY_MODE's docstring")
