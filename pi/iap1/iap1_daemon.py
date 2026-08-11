@@ -554,9 +554,11 @@ def handle_ret_dev_authentication_info(state, payload: bytes, ep_in_fd):
     """RetDevAuthenticationInfo (cmd=0x15) — spec Table 2-36 (Authentication 1.0: [majorVer,
     minorVer]) or Table 2-37 (Authentication 2.0: [2, 0, curSection, maxSection, certData...],
     possibly split across multiple sections). Per spec: ack every non-final 2.0 section with a
-    plain ACK(0x02), and only the final section with AckDevAuthenticationInfo(0x16) — then kick
-    off the challenge/signature step (0x17) regardless of version, since we don't validate the
-    certificate anyway (see module docstring)."""
+    plain ACK(0x02), and only the final section with AckDevAuthenticationInfo(0x16) — then, per
+    spec Table 2-5 steps 4-5 (non-IDPS only), run the GetAccessoryInfo/RetAccessoryInfo exchange
+    BEFORE GetDevAuthenticationSignature (step 6) — deferred to the RetAccessoryInfo handler once
+    that queue drains (state.auth_signature_due), rather than firing immediately here, so it never
+    overlaps with any other outstanding exchange (see CMD_IDENTIFY_DEVICE_LINGOES's handling)."""
     major, minor = payload[0], payload[1]
     if major == 0x02:
         cur_section, max_section = payload[2], payload[3]
@@ -567,18 +569,17 @@ def handle_ret_dev_authentication_info(state, payload: bytes, ep_in_fd):
         if cur_section < max_section:
             os.write(ep_in_fd, build_ack(0x00, CMD_RET_DEV_AUTHENTICATION_INFO))
             return  # wait for the next section before proceeding
-        print("  -> certificate complete; acking + requesting device signature")
+        print("  -> certificate complete; acking + requesting accessory info")
         os.write(ep_in_fd, build_ack_dev_authentication_info(0x00))
     else:
         print(f"  -> RetDevAuthenticationInfo (Authentication {major}.{minor}); "
-              "acking + requesting device signature")
+              "acking + requesting accessory info")
         os.write(ep_in_fd, build_ack_dev_authentication_info(0x00))
 
-    state.auth_retry_counter += 1
-    challenge_len = 20 if major == 0x02 else 16
-    challenge = os.urandom(challenge_len)
-    os.write(ep_in_fd,
-             build_get_dev_authentication_signature(challenge, state.auth_retry_counter))
+    state.auth_major_version = major
+    state.auth_signature_due = True
+    state.accessory_info_queue = collections.deque(ACC_INFO_REQUIRED_TYPES)
+    request_next_accessory_info(state, ep_in_fd)
 
 
 # ---- runtime ----
@@ -600,9 +601,15 @@ class State:
         self.idps_done = False
         self.cert_buf = bytearray()   # X.509 certificate reassembly (Authentication 2.0 only)
         self.auth_retry_counter = 0
-        # GetAccessoryInfo/RetAccessoryInfo — queue of Accessory Info Types still to be requested
-        # after the most recent IdentifyDeviceLingoes ACK; see CMD_GET_ACCESSORY_INFO's docstring.
+        # GetAccessoryInfo/RetAccessoryInfo — queue of Accessory Info Types still outstanding (used
+        # both by the cancel-mode dance and, per Table 2-5 steps 4-5, by the real auth flow — see
+        # CMD_GET_ACCESSORY_INFO's docstring and handle_ret_dev_authentication_info).
         self.accessory_info_queue = collections.deque()
+        # True once handle_ret_dev_authentication_info has kicked off the accessory-info queue and
+        # is waiting for it to drain before sending GetDevAuthenticationSignature (Table 2-5 step
+        # 6) — see the RetAccessoryInfo handler in process_rx.
+        self.auth_signature_due = False
+        self.auth_major_version = 0
 
 
 def handle_setup(ep0_fd, req_bytes: bytes):
@@ -681,20 +688,29 @@ def process_rx(state: State, ep_in_fd):
                 print(f"  -> IdentifyDeviceLingoes (lingoesSpoken=0x{lingoes_spoken:08x}, "
                       f"options=0x{options:08x}, deviceId=0x{device_id:08x}) — acking")
                 os.write(ep_in_fd, build_ack(0x00, CMD_IDENTIFY_DEVICE_LINGOES))
-                # Spec ("Cancelling a Current Authentication Process With IdentifyDeviceLingoes" /
-                # Command 0x27's own text): the iPod is expected to follow every IdentifyDeviceLingoes
-                # ACK with GetAccessoryInfo requests — previously entirely missing, very plausibly
-                # why the accessory gave up and restarted identification instead of progressing.
-                state.accessory_info_queue = collections.deque(ACC_INFO_REQUIRED_TYPES)
-                print("  -> requesting accessory info (GetAccessoryInfo x"
-                      f"{len(state.accessory_info_queue)})")
-                request_next_accessory_info(state, ep_in_fd)
-                # Spec: device ID 0x00000000 means the accessory doesn't require authentication;
-                # any nonzero ID means it does, and GetDevAuthenticationInfo should follow
-                # identification immediately (mirrors the old EndIDPS-success trigger). Per spec
-                # Table 2-5's "background authentication state" language this runs concurrently
-                # with the GetAccessoryInfo exchange above, not after it.
-                if device_id != 0 and not state.idps_done:
+                if device_id == 0:
+                    # Cancel-mode IdentifyDeviceLingoes (General lingo only, no options, deviceId
+                    # 0). Per spec's "Cancelling a Current Authentication Process With
+                    # IdentifyDeviceLingoes": "After the ACK response, the iPod will send the
+                    # accessory a GetAccessoryInfo command." This exchange is deliberately kept
+                    # separate from the real auth flow below — a live trial (2026-08-10) sending
+                    # GetAccessoryInfo and GetDevAuthenticationInfo concurrently on the SAME
+                    # (nonzero-deviceId) IdentifyDeviceLingoes ACK produced garbled, doubled-up
+                    # RetAccessoryInfo replies and the accessory never answering
+                    # GetDevAuthenticationInfo at all — consistent with the ADCL firmware bug
+                    # already found elsewhere in this file: a simple, one-track state machine that
+                    # can't handle two outstanding request "threads" from us at once. Table 2-5
+                    # itself only lists GetAccessoryInfo/RetAccessoryInfo as steps 4-5, AFTER
+                    # AckDevAuthenticationInfo (step 3) — see handle_ret_dev_authentication_info,
+                    # which now runs that step in the right place instead.
+                    state.accessory_info_queue = collections.deque(ACC_INFO_REQUIRED_TYPES)
+                    print("  -> cancel-mode identification — requesting accessory info "
+                          f"(GetAccessoryInfo x{len(state.accessory_info_queue)})")
+                    request_next_accessory_info(state, ep_in_fd)
+                elif not state.idps_done:
+                    # Nonzero device ID: the accessory wants authentication. Per spec Table 2-5
+                    # step 1, GetDevAuthenticationInfo comes first — GetAccessoryInfo (steps 4-5)
+                    # is deferred until after AckDevAuthenticationInfo (see above).
                     state.idps_done = True
                     print("  -> device requested authentication — initiating "
                           "(GetDevAuthenticationInfo)")
@@ -757,7 +773,21 @@ def process_rx(state: State, ep_in_fd):
                 print(f"  -> RetAccessoryInfo (type=0x{info_type:02x}) data={data!r}")
                 # Spec: no ACK/reply is expected here ("the accessory must ignore the iPod's
                 # acknowledgment" for the cancel-flow case) — just move on to the next queued type.
-                request_next_accessory_info(state, ep_in_fd)
+                if state.accessory_info_queue:
+                    request_next_accessory_info(state, ep_in_fd)
+                elif state.auth_signature_due:
+                    # Table 2-5 steps 4-5 (GetAccessoryInfo/RetAccessoryInfo) just finished — now
+                    # do step 6, deferred from handle_ret_dev_authentication_info until now so it
+                    # never runs concurrently with the accessory-info exchange (see
+                    # CMD_IDENTIFY_DEVICE_LINGOES's handling for why that matters).
+                    state.auth_signature_due = False
+                    state.auth_retry_counter += 1
+                    challenge_len = 20 if state.auth_major_version == 0x02 else 16
+                    challenge = os.urandom(challenge_len)
+                    print("  -> accessory info exchange complete — requesting device signature")
+                    os.write(ep_in_fd,
+                             build_get_dev_authentication_signature(challenge,
+                                                                     state.auth_retry_counter))
             elif lingo == LINGO_GENERAL and cmd == CMD_GET_IPOD_OPTIONS_FOR_LINGO:
                 lingo_id = payload[-1]
                 options = LINGO_OPTIONS.get(lingo_id, 0)
