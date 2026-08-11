@@ -101,6 +101,14 @@ Same as `pi/aoa-gadget/` and `pi/mirrorlink-ncm/`:
   confirmed (via live capture) to search for, and feeds anything received on it into the same iAP1
   packet parser `iap1_daemon.py` uses for USB. Run alongside `hfp_ag.py`, after `setup_bt_phone.sh`.
   Needs `python3-dbus`/`python3-gi` (same as `hfp_ag.py`).
+- `btsdp_iap_guided.py` — an **operator-guided hypothesis-test harness** built on the same SDP +
+  RFCOMM transport as `btsdp_iap.py`. Instead of one fixed handshake it walks a numbered list of
+  hypotheses (H1-H5) that each answer the head unit's StartIDPS/handshake traffic differently,
+  prompts you to launch HondaLink once per hypothesis, and records the head unit's response plus all
+  wire traffic to timestamped `guided_results_<suffix>.{jsonl,txt}` files for offline analysis. Use
+  this to settle *why* the handshake stalls, now that the "ACK dropped because acked cmdId ≥ 0x19"
+  theory has been refuted (see `references/cr-v/iap.md`, "ADCL ACK gate re-analysed"). Run it in
+  place of `btsdp_iap.py` (not alongside — both bind the same RFCOMM channel), with `hfp_ag.py` up.
 
 ## Quickstart
 

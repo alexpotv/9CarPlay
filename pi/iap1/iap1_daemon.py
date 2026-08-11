@@ -22,20 +22,19 @@ out backwards or simply wrong once checked against the real spec:
     IPILib.dll's `IPI_*ServerVREvent` strings), not the general app-launch gate — the proactive
     app-announcement handshake built earlier the same day is removed; it was targeting the wrong
     mechanism entirely.
-  - StartIDPS handling has swung back and forth once: we tried deliberately REFUSING it (ACK
-    status=0x04) based on a firmware bug found by decompiling NEventWatcher.exe's `ADCL_iAP1_
-    AplReceiveGeneralAckCallback` (`if (param_3 < 0x19) { ...process... } else { ...log a FATAL
-    error, drop it... }`, which would drop our ACK for StartIDPS since ackedCmdId=0x38 exceeds
-    0x19) — this forces the accessory onto the older, pre-IDPS IdentifyDeviceLingoes (cmd=0x13)
-    fallback path instead. Several live trials down that path all stalled at the exact same point
-    (GetDevAuthenticationInfo sent, never answered, accessory just resends IdentifyDeviceLingoes)
-    regardless of three independently-tested fixes (accessory-info/auth sequencing, inter-packet
-    delay, lingo-mismatch ACK handling) — meaning either that fallback path is itself dead/
-    untested code on this head unit, or GetDevAuthenticationInfo is broken on any path. We've now
-    reverted to ACCEPTING StartIDPS (ACK status=0x00) again, this time with every other protocol
-    detail spec-verified-correct (unlike the original pre-verification attempt at this), to
-    determine which: if EndIDPS -> GetDevAuthenticationInfo also stalls, the ADCL bug hypothesis
-    is moot — the real blocker is authentication itself, not which path reaches it.
+  - StartIDPS handling swung back and forth on a REFUTED premise. We had tried deliberately
+    REFUSING it (ACK status=0x04) based on a supposed firmware bug in NEventWatcher.exe's `ADCL_
+    iAP1_AplReceiveGeneralAckCallback` (`if (param_3 < 0x19) { ...process... } else { ...FATAL,
+    drop... }`), read as "drops our ACK for StartIDPS since ackedCmdId=0x38 exceeds 0x19." **That
+    read is wrong** (re-decompiled 2026-08-11, see references/cr-v/iap.md "ADCL ACK gate
+    re-analysed"): `param_3` is the ACK *status* byte, not the acked command ID — the callback and
+    its two siblings (Simple/Extended) are identical and share the SAME 0x19 bound despite having
+    totally different command-ID ranges, and the FATAL string literally names the field "ubStatus."
+    A status=0x00 ACK is therefore always forwarded regardless of which command it acks, so our
+    StartIDPS ACK is NOT dropped. This daemon now ACCEPTS StartIDPS (status=0x00) as the plain
+    spec-correct behavior — not to dodge a nonexistent drop. Why the head unit still resents
+    StartIDPS (if it does) is now an open, empirical question being A/B tested via
+    btsdp_iap_guided.py (H1-H5); this file implements the H1 baseline.
 
 WHAT IS CONFIDENT vs BEST-EFFORT here:
   - USB gadget enumeration (Apple VID, plausible iPhone PID, vendor-class bulk interface) — same
@@ -713,17 +712,12 @@ def process_rx(state: State, ep_in_fd):
                   f"payload={payload!r}")
             if lingo == LINGO_GENERAL and cmd == CMD_START_IDPS:
                 trans_id = (payload[0] << 8) | payload[1]
-                # Accepting IDPS again (2026-08-10) — reverting the earlier "refuse StartIDPS"
-                # experiment. That was based on an unconfirmed hypothesis (the ADCL firmware bug,
-                # see module docstring) and every trial down the resulting IdentifyDeviceLingoes
-                # fallback path stalled at the exact same point (GetDevAuthenticationInfo never
-                # answered) regardless of three independent fixes tried (accessory-info sequencing,
-                # inter-packet delay, lingo-mismatch handling) — meaning either that fallback path
-                # is itself dead/untested code on this head unit, or GetDevAuthenticationInfo is
-                # broken on ANY path. Accepting IDPS (now with fully spec-corrected framing/command
-                # IDs/checksums, unlike the original pre-verification attempt at this) tests which:
-                # if EndIDPS->GetDevAuthenticationInfo ALSO stalls, the problem is authentication
-                # itself, not the fallback path.
+                # Accepting StartIDPS with a plain success ACK — the spec-correct behavior. The
+                # earlier "refuse StartIDPS to dodge the ADCL ACK-drop bug" reasoning is retired:
+                # that bug was a misread (param_3 is the ACK status byte, not the acked command ID —
+                # see module docstring / iap.md "ADCL ACK gate re-analysed"), so a status=0x00 ACK
+                # for StartIDPS reaches the accessory fine. If IDPS still doesn't progress, the cause
+                # lies elsewhere and is being A/B tested via btsdp_iap_guided.py (H1-H5).
                 print(f"  -> StartIDPS (transID={trans_id}) — accepting")
                 send_packet(ep_in_fd, build_ack(0x00, CMD_START_IDPS))
             elif lingo == LINGO_GENERAL and cmd == CMD_IDENTIFY_DEVICE_LINGOES:
