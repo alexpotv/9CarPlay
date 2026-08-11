@@ -135,7 +135,7 @@ class Hypothesis:
                  start_idps="accept", sync="short", run_idps_body=True, init_auth=True,
                  opt11_mode="unknown_id", general_options=GENERAL_APP_BIT, other_lingo_options=0,
                  echo_transid=True, auth_trigger="after_endidps", force_idps_success=False,
-                 cert_section_mode="accept_first"):
+                 cert_section_mode="accept_first", auth_transid=False, defer_challenge=False):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -163,6 +163,13 @@ class Hypothesis:
         #   "poll_next"    -> re-send GetDevAuthenticationInfo to pull the next section
         #   "ack_transid"  -> plain ACK, but with the cert's 2-byte transID prefix echoed
         self.cert_section_mode = cert_section_mode
+        # auth_transid: prefix the auth-phase replies we send (AckDevAuthenticationInfo 0x16,
+        # GetDevAuthenticationSignature 0x17, AckDevAuthenticationStatus 0x19) with the 2-byte transID
+        # the head unit used — same correlation the cert-section ACK needed in V3.
+        self.auth_transid = auth_transid
+        # defer_challenge: after the final cert section send only AckDevAuthenticationInfo (0x16) and
+        # NOT the signature challenge (0x17), to see whether the head unit drives the next step itself.
+        self.defer_challenge = defer_challenge
 
 
 # ---------------------------------------------------------------------------------------------
@@ -196,42 +203,52 @@ class Hypothesis:
 # ---------------------------------------------------------------------------------------------
 
 
-# Round 5 keeps the settled auth path (force IDPS success + 0x14 after FID tokens + large-packet
-# parse) and varies ONLY how we answer a non-final cert section. Success = the head unit sends
-# RetDevAuthenticationSignature (0x18), we ACK status (0x19), and a NEW command class appears
-# (RetiPodPreferences / GetIPodInfo 0x07 / OpenDataSession 0x3f) — past every wall so far.
+# ---------------------------------------------------------------------------------------------
+# ROUND 5 RESULTS (runs 20260811_1436-1439, V1-V4) — V3 solved cert sectioning. The transID-echoing
+# section ACK PULLED cert section 1 (0x15 x2, both sections received) where U1's plain ACK stalled;
+# V1 (accept after first section -> jump to challenge) made the head unit LOOP instead. So the cert
+# advances only via a transID-tagged ACK — same transID-correlation lesson as every other stage.
+# BUT after V3 received both sections and sent AckDevAuthenticationInfo (0x16) + the signature
+# challenge (0x17), the head unit went SILENT for ~10s — no RetDevAuthenticationSignature (0x18).
+# The near-certain reason: our 0x16/0x17 carried NO transID (unlike the section ACK that just
+# worked). Round 6 adds `auth_transid` to prefix the whole auth phase.
+# ---------------------------------------------------------------------------------------------
+
+
+# Round 6: with cert sectioning solved (transID-tagged ACK), make the auth-phase replies carry the
+# transID too and try to finally elicit the signature. Success = the head unit sends
+# RetDevAuthenticationSignature (0x18); we ACK status (0x19); a NEW command class appears
+# (RetiPodPreferences / GetIPodInfo 0x07 / OpenDataSession 0x3f) — the doorway to the app launch.
 HYPOTHESES = [
     Hypothesis(
-        "V1", "Accept cert after first section -> jump to signature challenge",
-        "We don't validate the certificate, so there's no need to collect every section. On the "
-        "first RetDevAuthenticationInfo we send AckDevAuthenticationInfo (0x16) + "
-        "GetDevAuthenticationSignature (0x17) immediately, skipping the sectioning the head unit "
-        "wouldn't advance in U1. If the head unit is happy to be challenged now, it signs (0x18).",
-        "Head unit replies RetDevAuthenticationSignature (0x18); we ACK 0x19; a new command class "
+        "W1", "transID on the whole auth phase (0x16 + 0x17 + 0x19)",
+        "THE lead. Keep V3's transID-tagged cert-section advance, and additionally prefix "
+        "AckDevAuthenticationInfo (0x16), GetDevAuthenticationSignature (0x17) and "
+        "AckDevAuthenticationStatus (0x19) with the head unit's transID — the correlation every "
+        "other accepted message on this head unit carries. Should finally get it to sign.",
+        "Head unit sends RetDevAuthenticationSignature (0x18); we ACK 0x19; a NEW command class "
         "appears (preferences / GetIPodInfo / OpenDataSession).",
-        auth_trigger="after_fidtokens", force_idps_success=True, cert_section_mode="accept_first"),
+        cert_section_mode="ack_transid", auth_transid=True,
+        auth_trigger="after_fidtokens", force_idps_success=True),
 
     Hypothesis(
-        "V2", "Pull next cert section by re-sending GetDevAuthenticationInfo",
-        "Maybe the head unit advances sections when re-polled rather than plain-ACKed. On a non-final "
-        "section, re-send GetDevAuthenticationInfo (0x14) to request the next.",
-        "Cert section 1 (another 0x15) arrives — then the flow continues to the challenge.",
-        auth_trigger="after_fidtokens", force_idps_success=True, cert_section_mode="poll_next"),
+        "W2", "transID auth phase, but DEFER the challenge (send only 0x16, let head unit drive)",
+        "Like W1 but after the final cert section send only AckDevAuthenticationInfo (0x16), not the "
+        "0x17 challenge. Tests whether the head unit itself prompts for the next step once the cert "
+        "is acknowledged, rather than expecting the iPod to challenge unprompted.",
+        "After our 0x16 the head unit sends something new (a prompt, or it drives toward app launch) "
+        "instead of going silent.",
+        cert_section_mode="ack_transid", auth_transid=True, defer_challenge=True,
+        auth_trigger="after_fidtokens", force_idps_success=True),
 
     Hypothesis(
-        "V3", "Advance cert section with a transID-echoing ACK",
-        "U1's plain ACK carried no transID; everything else on this head unit correlates by the "
-        "2-byte transID. Echo the cert's transID prefix in the section ACK and see if that pulls "
-        "section 1.",
-        "Cert section 1 arrives after the transID-tagged ACK.",
-        auth_trigger="after_fidtokens", force_idps_success=True, cert_section_mode="ack_transid"),
-
-    Hypothesis(
-        "V4", "Control: reproduce U1 (plain ACK per section, expect the silent stall)",
-        "U1 exactly — plain ACK for the non-final section. Confirms the ~14s post-ACK silence still "
-        "reproduces before the other rows change the section handling.",
-        "Cert (0x15) arrives, we plain-ACK, head unit goes silent — same as U1.",
-        auth_trigger="after_fidtokens", force_idps_success=True, cert_section_mode="ack_sections"),
+        "W3", "Control: reproduce V3 (transID cert ACK, but NO transID on 0x16/0x17)",
+        "V3 exactly — the winning cert-section advance, but auth-phase replies without a transID. "
+        "Confirms the ~10s silence after our challenge still reproduces, isolating auth_transid as "
+        "the change under test.",
+        "Both cert sections arrive; we send 0x16+0x17 (no transID); head unit stays silent — same as V3.",
+        cert_section_mode="ack_transid", auth_transid=False,
+        auth_trigger="after_fidtokens", force_idps_success=True),
 ]
 
 
@@ -350,13 +367,22 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
                 return out
             # "accept_first": fall through — we don't validate the cert, so accept after one section
             # and jump straight to the challenge (0x16 + 0x17).
-        out.append(iap.build_ack_dev_authentication_info(0x00))
-        challenge_len = 20 if major == 0x02 else 16
-        out.append(iap.build_get_dev_authentication_signature(os.urandom(challenge_len), 1))
+        # Final cert section. Round 5 (V3) proved the section ACK needs the transID; round-5 V3 then
+        # stalled at the challenge because our 0x16/0x17 carried NO transID. `auth_transid` prefixes
+        # the whole auth phase the same way every other stage on this head unit is correlated.
+        tp = trans_prefix if hyp.auth_transid else b""
+        out.append(iap.build_packet(iap.LINGO_GENERAL, iap.CMD_ACK_DEV_AUTHENTICATION_INFO,
+                                    tp + bytes([0x00])))
+        if not hyp.defer_challenge:
+            challenge_len = 20 if major == 0x02 else 16
+            out.append(iap.build_packet(iap.LINGO_GENERAL, iap.CMD_GET_DEV_AUTHENTICATION_SIGNATURE,
+                                        tp + os.urandom(challenge_len) + bytes([1])))
         return out
 
     if hyp.init_auth and cmd == iap.CMD_RET_DEV_AUTHENTICATION_SIGNATURE:
-        out.append(iap.build_ack_dev_authentication_status(0x00))
+        tp = payload[:2] if (hyp.auth_transid and len(payload) >= 2) else b""
+        out.append(iap.build_packet(iap.LINGO_GENERAL, iap.CMD_ACK_DEV_AUTHENTICATION_STATUS,
+                                    tp + bytes([0x00])))
         return out
 
     # ---- GetiPodOptionsForLingo (0x4b): report per-lingo option bits. The queried lingo id is the
@@ -505,6 +531,7 @@ def operator_console(harness):
               f"general_opts=0x{hyp.general_options:x}  other_lingo_opts=0x{hyp.other_lingo_options:x}")
         print(f"                  auth_trigger={hyp.auth_trigger}  "
               f"force_idps_success={hyp.force_idps_success}  cert_section={hyp.cert_section_mode}")
+        print(f"                  auth_transid={hyp.auth_transid}  defer_challenge={hyp.defer_challenge}")
         cmd = _ask("\n  Press Enter to ARM this hypothesis (or s/r/q): ").lower()
         if cmd == "q":
             break
@@ -521,7 +548,8 @@ def operator_console(harness):
                     opt11_mode=hyp.opt11_mode, general_options=hyp.general_options,
                     other_lingo_options=hyp.other_lingo_options, echo_transid=hyp.echo_transid,
                     auth_trigger=hyp.auth_trigger, force_idps_success=hyp.force_idps_success,
-                    cert_section_mode=hyp.cert_section_mode)
+                    cert_section_mode=hyp.cert_section_mode, auth_transid=hyp.auth_transid,
+                    defer_challenge=hyp.defer_challenge)
         print(f"\n  >>> ARMED ({hyp.key}). Now LAUNCH HondaLink on the head unit and watch it.")
         print("      (If it's already open, back out and re-enter the HondaLink source to force a")
         print("       fresh connection.) Live rx/tx traffic prints below as it happens.")
