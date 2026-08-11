@@ -151,22 +151,25 @@ CMD_RETURN_MODEL_NUM = 0x0E           # was 0x20
 CMD_REQUEST_LINGO_PROTOCOL_VERSION = 0x0F  # Device-to-iPod: [LingoId] (1 byte).
 CMD_RETURN_LINGO_PROTOCOL_VERSION = 0x10   # iPod-to-Device: [LingoId, majorVer, minorVer].
 
-# Per spec, only report a version for lingoes we actually implement anything of — General Lingo
-# (0x00) only, and specifically version 1.0 (not 1.09/IDPS-era), to stay consistent with our
-# StartIDPS refusal: we're telling the accessory we're an iPod that predates IDPS. Also includes
-# the three other lingoes this head unit claims during identification (see LINGO_SIMPLE_REMOTE
-# etc.'s docstring) — real iPods/iPhones have supported Simple Remote and Display Remote (the
-# "Now Playing" screen lingoes) since the very first iPod accessories, so Honda's firmware was
-# almost certainly only ever tested against hardware that answers these, not against a device that
-# claims General-only support. A live trial (2026-08-10) making us honestly ACK "command failed"
-# for the lingoesSpoken mismatch (per spec's own documented behavior for that case) produced no
-# improvement, so this reverts to accepting the full claim while keeping real functionality scoped
-# to General Lingo only — these three get version 1.0 and zero capability bits (LINGO_OPTIONS
-# below), enough to answer identification-time queries without implementing anything else. For any
-# OTHER lingo, the spec's documented behavior for "invalid or unsupported lingo ID" is an ACK with
-# Bad Parameter status, not a fabricated version — see the handler in process_rx.
+# General Lingo's version was previously pinned to (1, 0) — deliberately pre-IDPS — to stay
+# consistent with refusing StartIDPS. Now that StartIDPS is accepted again (2026-08-10), that's a
+# self-contradiction: spec's own command version table (searched while investigating a live trial
+# where the accessory ran the full IDPS/lingo-options exchange and then reset instead of sending
+# SetFIDTokenValues) lists StartIDPS, SetFIDTokenValues, EndIDPS, IDPSStatus, and
+# GetiPodOptionsForLingo — every General Lingo command we actively use in the IDPS path — as
+# requiring protocol version *1.09*. Claiming 1.0 while behaviorally running 1.09-era commands is
+# exactly the kind of inconsistency a spec-compliant accessory would reasonably balk at. Bumped to
+# (1, 9) to match reality. Also includes the three other lingoes this head unit claims during
+# identification (see LINGO_SIMPLE_REMOTE etc.'s docstring) — real iPods/iPhones have supported
+# Simple Remote and Display Remote (the "Now Playing" screen lingoes) since the very first iPod
+# accessories, so Honda's firmware was almost certainly only ever tested against hardware that
+# answers these, not against a device that claims General-only support; these three get zero
+# capability bits (LINGO_OPTIONS below) since we implement no real functionality for them, just
+# enough to answer identification-time queries. For any OTHER lingo, the spec's documented behavior
+# for "invalid or unsupported lingo ID" is an ACK with Bad Parameter status, not a fabricated
+# version — see the handler in process_rx.
 LINGO_PROTOCOL_VERSIONS = {
-    LINGO_GENERAL: (1, 0),
+    LINGO_GENERAL: (1, 9),
     LINGO_SIMPLE_REMOTE: (1, 0),
     LINGO_DISPLAY_REMOTE: (1, 0),
     LINGO_EXTENDED_INTERFACE: (1, 0),
@@ -174,23 +177,17 @@ LINGO_PROTOCOL_VERSIONS = {
 
 # ---- cmd=0x11 — officially "Reserved" in spec Table 2-9 (0x11-0x12 unassigned in any public
 # protocol version), but this head unit sends it, once, right after acking StartIDPS, every trial.
-# Two hypotheses, both implemented, toggled by CMD_0X11_REPLY_MODE for live A/B testing:
-#   - "unknown_id" (default, safe): reply with the spec-defined generic ACK, status=0x05 ("ERROR:
-#     Unknown ID" — Table 2-13), honestly telling the accessory we don't recognize this command
-#     instead of staying silent (which is indistinguishable from a dead link). Zero risk of a
-#     malformed/misinterpreted payload.
-#   - "device_id" (speculative): Honda's own patent (US9116563B2) describes a pairing sequence
-#     where, right after the physical/link-level check, "the phone transmits a device ID (serial
-#     number, IMEI, or similar)" — a step with no equivalent in Apple's public spec, consistent
-#     with 0x11 living in an officially-unassigned slot because it's a Honda-proprietary addition.
-#     cmd=0x11's position in the observed sequence (immediately after StartIDPS's ACK, before any
-#     Lingo capability negotiation) matches this patent step closely. The exact reply command
-#     number and payload shape are NOT specified anywhere (patents describe behavior, not wire
-#     bytes) — 0x12 (the other half of the reserved pair) and a serial-number-shaped string are
-#     both guesses, chosen only because they're the most spec-convention-consistent choice.
+# Previously toggled between two hypotheses for live A/B testing; settled 2026-08-10 on
+# "unknown_id" after a trial with the now-confirmed global per-session transID prefix (see
+# CMD_IDENTIFY_DEVICE_LINGOES's docstring) showed cmd=0x11's payload is JUST that 2-byte transID
+# (b'\x00\x01') and nothing else — no room for any Honda-proprietary device-ID payload at all. The
+# "device_id" mode's patent-derived guess (an invented, non-transID-prefixed 0x12 reply) never had
+# strong evidence and now actively conflicts with the observed wire format, so it's retired in
+# favor of the spec-defined generic ACK, status=0x05 ("ERROR: Unknown ID" — Table 2-13) — honestly
+# telling the accessory we don't recognize this command instead of sending a malformed guess.
 CMD_UNKNOWN_0X11 = 0x11
 CMD_DEVICE_ID_REPLY_GUESS_0X12 = 0x12
-CMD_0X11_REPLY_MODE = "device_id"  # or "unknown_id"
+CMD_0X11_REPLY_MODE = "unknown_id"
 
 # ---- Device (MFi) authentication — spec Commands 0x14-0x19. We initiate this ourselves right
 # after IDPS completes (see CMD_END_IDPS's handling in process_rx) and unconditionally accept
