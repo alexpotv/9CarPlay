@@ -135,7 +135,8 @@ class Hypothesis:
                  start_idps="accept", sync="short", run_idps_body=True, init_auth=True,
                  opt11_mode="unknown_id", general_options=GENERAL_APP_BIT, other_lingo_options=0,
                  echo_transid=True, auth_trigger="after_endidps", force_idps_success=False,
-                 cert_section_mode="accept_first", auth_transid=False, defer_challenge=False):
+                 cert_section_mode="accept_first", auth_transid=False, defer_challenge=False,
+                 challenge_retry_byte=True, autoack_unknown=False):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -170,6 +171,13 @@ class Hypothesis:
         # defer_challenge: after the final cert section send only AckDevAuthenticationInfo (0x16) and
         # NOT the signature challenge (0x17), to see whether the head unit drives the next step itself.
         self.defer_challenge = defer_challenge
+        # challenge_retry_byte: append a trailing retry-counter byte to the 0x17 challenge (the daemon
+        # builder does). If the accessory expects a bare 20-byte challenge, that extra byte could be
+        # rejected — this lets us test the challenge with/without it.
+        self.challenge_retry_byte = challenge_retry_byte
+        # autoack_unknown: ACK any otherwise-unrecognized General Lingo command with a transID-echoing
+        # success ACK — used to walk the post-auth SystemInit phase and discover its command sequence.
+        self.autoack_unknown = autoack_unknown
 
 
 # ---------------------------------------------------------------------------------------------
@@ -215,40 +223,55 @@ class Hypothesis:
 # ---------------------------------------------------------------------------------------------
 
 
-# Round 6: with cert sectioning solved (transID-tagged ACK), make the auth-phase replies carry the
-# transID too and try to finally elicit the signature. Success = the head unit sends
-# RetDevAuthenticationSignature (0x18); we ACK status (0x19); a NEW command class appears
-# (RetiPodPreferences / GetIPodInfo 0x07 / OpenDataSession 0x3f) — the doorway to the app launch.
+# ---------------------------------------------------------------------------------------------
+# ROUND 6 NOTE (runs 20260811_1448/1450): W1 was CONTAMINATED — the head unit connected before the
+# operator armed it, so replies went out as full 0xFF 0x55 sync (module default) and the run died at
+# the FID tokens. So the transID-on-auth fix was NEVER actually tested. W3 (control) reproduced the
+# V3 stall. Harness fix landed: main() now defaults OUTGOING_SYNC_MODE="short" so an unarmed
+# connection can't repeat this. Firmware (NEventWatcher SystemInit state machine) confirms the
+# accessory has a dedicated `fnSystemInitAuthenticationWait` state, and that passing authentication
+# leads to the display Preferences states (`fnSystemInitPreferencesScreenConfig`/`AspectRatio`,
+# `SetiPodPreferences`/`RetiPodPreferences`) — i.e. the iPod-Out video setup. Auth is the real gate;
+# the direction is favourable (the accessory sends its own cert). Re-run W1 cleanly; W4 is a fallback
+# if the transID alone isn't enough.
+# ---------------------------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------------------------
+# ROUND 6 RESULT (clean W1 re-run, run 20260811_1504) — AUTHENTICATION COMPLETED for the first time.
+# With the transID on the whole auth phase: cert section 0 -> transID ACK -> cert section 1 -> we
+# send 0x16 + 0x17 (transID-tagged) -> the head unit SIGNED (RetDevAuthenticationSignature 0x18) ->
+# we sent 0x19 -> and the head unit immediately sent a NEW command, cmd 0x4f (payload 000a = transID
+# 0x000a, resuming the global counter). So we are past the auth gate and into the post-auth
+# SystemInit phase. Firmware says that phase is: SetiPodPreferences (accessory->iPod, we ACK),
+# GetiPodPreferences -> RetiPodPreferences (we return data), SetEventNotification (we ACK),
+# GetSupportedEventNotification (we return data) — the iPod-Out display/preferences setup that leads
+# to video. `autoack_unknown` walks it: ACK unknown post-auth commands with a transID to keep the
+# head unit talking and capture the exact sequence + payloads to build real handlers from.
+# ---------------------------------------------------------------------------------------------
+
+
+# Round 7: authentication is solved. Now walk the post-auth SystemInit / preferences phase. Success =
+# the head unit keeps issuing commands (preferences, event-notification, extended-interface) that we
+# ACK/answer, advancing toward the app launch / iPod-Out video setup — captured for the next round.
 HYPOTHESES = [
     Hypothesis(
-        "W1", "transID on the whole auth phase (0x16 + 0x17 + 0x19)",
-        "THE lead. Keep V3's transID-tagged cert-section advance, and additionally prefix "
-        "AckDevAuthenticationInfo (0x16), GetDevAuthenticationSignature (0x17) and "
-        "AckDevAuthenticationStatus (0x19) with the head unit's transID — the correlation every "
-        "other accepted message on this head unit carries. Should finally get it to sign.",
-        "Head unit sends RetDevAuthenticationSignature (0x18); we ACK 0x19; a NEW command class "
-        "appears (preferences / GetIPodInfo / OpenDataSession).",
+        "X1", "Walk the post-auth phase: auto-ACK unknown commands with transID",
+        "Full auth (the proven W1 path) + autoack_unknown: after auth we transID-ACK every "
+        "otherwise-unrecognized General Lingo command (starting with 0x4f) to keep the SystemInit / "
+        "preferences sequence moving and capture what the head unit asks for.",
+        "The head unit issues a sequence of NEW commands past 0x4f (SetiPodPreferences / "
+        "GetiPodPreferences / event-notification) — each new cmd id + payload is logged for analysis.",
         cert_section_mode="ack_transid", auth_transid=True,
-        auth_trigger="after_fidtokens", force_idps_success=True),
+        auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True),
 
     Hypothesis(
-        "W2", "transID auth phase, but DEFER the challenge (send only 0x16, let head unit drive)",
-        "Like W1 but after the final cert section send only AckDevAuthenticationInfo (0x16), not the "
-        "0x17 challenge. Tests whether the head unit itself prompts for the next step once the cert "
-        "is acknowledged, rather than expecting the iPod to challenge unprompted.",
-        "After our 0x16 the head unit sends something new (a prompt, or it drives toward app launch) "
-        "instead of going silent.",
-        cert_section_mode="ack_transid", auth_transid=True, defer_challenge=True,
-        auth_trigger="after_fidtokens", force_idps_success=True),
-
-    Hypothesis(
-        "W3", "Control: reproduce V3 (transID cert ACK, but NO transID on 0x16/0x17)",
-        "V3 exactly — the winning cert-section advance, but auth-phase replies without a transID. "
-        "Confirms the ~10s silence after our challenge still reproduces, isolating auth_transid as "
-        "the change under test.",
-        "Both cert sections arrive; we send 0x16+0x17 (no transID); head unit stays silent — same as V3.",
-        cert_section_mode="ack_transid", auth_transid=False,
-        auth_trigger="after_fidtokens", force_idps_success=True),
+        "X2", "Control: complete auth, then STOP (no auto-ACK) — confirm 0x4f reproduces",
+        "The clean W1 config with no post-auth handling. Confirms we reliably reach cmd 0x4f right "
+        "after AckDevAuthenticationStatus (0x19), as the baseline the auto-ACK walk builds on.",
+        "Auth completes (0x18 -> 0x19) and cmd 0x4f arrives, then silence (we don't answer it).",
+        cert_section_mode="ack_transid", auth_transid=True,
+        auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=False),
 ]
 
 
@@ -375,8 +398,9 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
                                     tp + bytes([0x00])))
         if not hyp.defer_challenge:
             challenge_len = 20 if major == 0x02 else 16
+            challenge = os.urandom(challenge_len) + (bytes([1]) if hyp.challenge_retry_byte else b"")
             out.append(iap.build_packet(iap.LINGO_GENERAL, iap.CMD_GET_DEV_AUTHENTICATION_SIGNATURE,
-                                        tp + os.urandom(challenge_len) + bytes([1])))
+                                        tp + challenge))
         return out
 
     if hyp.init_auth and cmd == iap.CMD_RET_DEV_AUTHENTICATION_SIGNATURE:
@@ -422,6 +446,17 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
                                         trans_id + struct.pack(">Q", hyp.general_options)))
         else:  # "unknown_id" — what round 1 sent
             out.append(iap.build_ack(0x05, iap.CMD_UNKNOWN_0X11))
+        return out
+
+    # Post-auth SystemInit phase (SetiPodPreferences / GetiPodPreferences / SetEventNotification /
+    # GetSupportedEventNotification, per the firmware). We don't yet know each command's exact reply
+    # shape, so `autoack_unknown` answers any unrecognized General Lingo command with a transID-
+    # echoing ACK (status success) — the universal correlation pattern — to keep the head unit
+    # talking and reveal the whole post-auth sequence. Set-type commands are satisfied by the ACK;
+    # Get-type ones (that want a data reply) will stall or retry, telling us which need real handlers.
+    if hyp.autoack_unknown and lingo == iap.LINGO_GENERAL:
+        trans_id = payload[:2] if len(payload) >= 2 else b"\x00\x00"
+        out.append(iap.build_packet(iap.LINGO_GENERAL, iap.CMD_ACK, trans_id + bytes([0x00, cmd])))
         return out
 
     return out   # unrecognized -> logged by caller, no reply
@@ -531,7 +566,8 @@ def operator_console(harness):
               f"general_opts=0x{hyp.general_options:x}  other_lingo_opts=0x{hyp.other_lingo_options:x}")
         print(f"                  auth_trigger={hyp.auth_trigger}  "
               f"force_idps_success={hyp.force_idps_success}  cert_section={hyp.cert_section_mode}")
-        print(f"                  auth_transid={hyp.auth_transid}  defer_challenge={hyp.defer_challenge}")
+        print(f"                  auth_transid={hyp.auth_transid}  defer_challenge={hyp.defer_challenge}  "
+              f"autoack_unknown={hyp.autoack_unknown}")
         cmd = _ask("\n  Press Enter to ARM this hypothesis (or s/r/q): ").lower()
         if cmd == "q":
             break
@@ -549,7 +585,7 @@ def operator_console(harness):
                     other_lingo_options=hyp.other_lingo_options, echo_transid=hyp.echo_transid,
                     auth_trigger=hyp.auth_trigger, force_idps_success=hyp.force_idps_success,
                     cert_section_mode=hyp.cert_section_mode, auth_transid=hyp.auth_transid,
-                    defer_challenge=hyp.defer_challenge)
+                    defer_challenge=hyp.defer_challenge, autoack_unknown=hyp.autoack_unknown)
         print(f"\n  >>> ARMED ({hyp.key}). Now LAUNCH HondaLink on the head unit and watch it.")
         print("      (If it's already open, back out and re-enter the HondaLink source to force a")
         print("       fresh connection.) Live rx/tx traffic prints below as it happens.")
@@ -633,6 +669,12 @@ def main():
     # budget being blown), so drop the production daemon's 50ms inter-packet spacing — reply as fast
     # as possible. The head unit handled our back-to-back initial replies fine in round 1.
     iap.INTER_PACKET_DELAY_S = 0.0
+
+    # Default to SHORT (bare-0x55) sync at startup, not the module default "full". If the head unit
+    # opens the RFCOMM channel before the operator arms a hypothesis (it auto-connects on the SDP
+    # record), replies would otherwise go out as full 0xFF 0x55 framing, which this head unit
+    # rejects (round 1) — that silently wasted the W1 run. arm() still sets it per hypothesis.
+    iap.OUTGOING_SYNC_MODE = "short"
 
     suffix = session_suffix()
     harness = Harness(f"guided_results_{suffix}.jsonl", f"guided_results_{suffix}.txt")
