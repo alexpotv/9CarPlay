@@ -62,6 +62,7 @@ Usage (on the Pi, after setup_gadget.sh, BEFORE binding the UDC):
     sudo python3 iap1_daemon.py /dev/ffs-iap1
 """
 
+import collections
 import errno
 import os
 import select
@@ -204,6 +205,36 @@ CMD_GET_IPOD_OPTIONS_FOR_LINGO = 0x4B  # Device-to-iPod: spec payload is just [L
 CMD_RET_IPOD_OPTIONS_FOR_LINGO = 0x4C  # iPod-to-Device: [LingoId, 8 option bits, big-endian]
                                         # (spec Table 2-112 — no transID slot exists here, so our
                                         # reply doesn't echo one, matching the base spec exactly).
+
+# ---- GetAccessoryInfo/RetAccessoryInfo — spec Commands 0x27/0x28. The gap identified by a live
+# trial (2026-08-10) where, after we refused StartIDPS, the accessory sent a "cancel" IdentifyDevice-
+# Lingoes (General lingo only, options=0, deviceId=0), we ACKed it, and then... nothing — no more
+# progress until it gave up and resent IdentifyDeviceLingoes (this time with real capabilities and a
+# nonzero deviceId) from scratch. Per spec's "Cancelling a Current Authentication Process With
+# IdentifyDeviceLingoes": "After the ACK response, the iPod will send the accessory a GetAccessoryInfo
+# command. The accessory must respond with a RetAccessoryInfo command... If the iPod responds with an
+# ACK success status within 1 second, proceed to the rest of device initialization and authentication
+# processes." We never sent GetAccessoryInfo at all — this was very plausibly what the accessory was
+# waiting on before it gave up and restarted. Separately, spec Command 0x27's own text confirms this
+# isn't cancel-specific: "The iPod begins sending GetAccessoryInfo commands as soon as an accessory
+# identifies itself successfully via the IdentifyDeviceLingoes command" — i.e. on every
+# IdentifyDeviceLingoes ACK, not just the cancel one.
+CMD_GET_ACCESSORY_INFO = 0x27  # iPod-to-Device: [AccessoryInfoType, typeParams...].
+CMD_RET_ACCESSORY_INFO = 0x28  # Device-to-iPod: [AccessoryInfoType, data...].
+
+# Spec Table 2-52's "Required" Accessory Info Types, in the order the spec says the iPod must
+# request them (the 3 "Optional" types — min iPod FW version, min lingo version, serial number,
+# incoming max payload size — are skipped; none of them are needed to unblock the handshake).
+ACC_INFO_CAPABILITIES = 0x00
+ACC_INFO_NAME = 0x01
+ACC_INFO_FW_VERSION = 0x04
+ACC_INFO_HW_VERSION = 0x05
+ACC_INFO_MANUFACTURER = 0x06
+ACC_INFO_MODEL_NUM = 0x07
+ACC_INFO_REQUIRED_TYPES = [
+    ACC_INFO_CAPABILITIES, ACC_INFO_NAME, ACC_INFO_FW_VERSION,
+    ACC_INFO_HW_VERSION, ACC_INFO_MANUFACTURER, ACC_INFO_MODEL_NUM,
+]
 
 # Spec Table 2-110's per-Lingo option bitmasks — bit N means "iPod supports feature N for this
 # Lingo." Every Lingo defaults to 0 (no special capabilities — we don't implement audio/video/
@@ -484,6 +515,22 @@ def build_ret_ipod_options_for_lingo(lingo_id: int) -> bytes:
     return build_packet(LINGO_GENERAL, CMD_RET_IPOD_OPTIONS_FOR_LINGO, payload)
 
 
+# ---- GetAccessoryInfo/RetAccessoryInfo (spec Commands 0x27/0x28) ----
+
+def build_get_accessory_info(info_type: int, params: bytes = b"") -> bytes:
+    return build_packet(LINGO_GENERAL, CMD_GET_ACCESSORY_INFO, bytes([info_type]) + params)
+
+
+def request_next_accessory_info(state, ep_in_fd):
+    """Pops the next queued Accessory Info Type and requests it, one at a time (spec: "The iPod
+    requests each of the Accessory Info Types in the order in which they appear in Table 2-52").
+    No-op once the queue is empty."""
+    if not state.accessory_info_queue:
+        return
+    info_type = state.accessory_info_queue.popleft()
+    os.write(ep_in_fd, build_get_accessory_info(info_type))
+
+
 # ---- Device (MFi) authentication (spec Commands 0x14-0x19) ----
 
 def build_get_dev_authentication_info() -> bytes:
@@ -553,6 +600,9 @@ class State:
         self.idps_done = False
         self.cert_buf = bytearray()   # X.509 certificate reassembly (Authentication 2.0 only)
         self.auth_retry_counter = 0
+        # GetAccessoryInfo/RetAccessoryInfo — queue of Accessory Info Types still to be requested
+        # after the most recent IdentifyDeviceLingoes ACK; see CMD_GET_ACCESSORY_INFO's docstring.
+        self.accessory_info_queue = collections.deque()
 
 
 def handle_setup(ep0_fd, req_bytes: bytes):
@@ -631,9 +681,19 @@ def process_rx(state: State, ep_in_fd):
                 print(f"  -> IdentifyDeviceLingoes (lingoesSpoken=0x{lingoes_spoken:08x}, "
                       f"options=0x{options:08x}, deviceId=0x{device_id:08x}) — acking")
                 os.write(ep_in_fd, build_ack(0x00, CMD_IDENTIFY_DEVICE_LINGOES))
+                # Spec ("Cancelling a Current Authentication Process With IdentifyDeviceLingoes" /
+                # Command 0x27's own text): the iPod is expected to follow every IdentifyDeviceLingoes
+                # ACK with GetAccessoryInfo requests — previously entirely missing, very plausibly
+                # why the accessory gave up and restarted identification instead of progressing.
+                state.accessory_info_queue = collections.deque(ACC_INFO_REQUIRED_TYPES)
+                print("  -> requesting accessory info (GetAccessoryInfo x"
+                      f"{len(state.accessory_info_queue)})")
+                request_next_accessory_info(state, ep_in_fd)
                 # Spec: device ID 0x00000000 means the accessory doesn't require authentication;
                 # any nonzero ID means it does, and GetDevAuthenticationInfo should follow
-                # identification immediately (mirrors the old EndIDPS-success trigger).
+                # identification immediately (mirrors the old EndIDPS-success trigger). Per spec
+                # Table 2-5's "background authentication state" language this runs concurrently
+                # with the GetAccessoryInfo exchange above, not after it.
                 if device_id != 0 and not state.idps_done:
                     state.idps_done = True
                     print("  -> device requested authentication — initiating "
@@ -691,6 +751,13 @@ def process_rx(state: State, ep_in_fd):
                 print(f"  -> RetDevAuthenticationSignature ({len(payload)}-byte signature) — "
                       "accepting unconditionally (see module docstring)")
                 os.write(ep_in_fd, build_ack_dev_authentication_status(0x00))
+            elif lingo == LINGO_GENERAL and cmd == CMD_RET_ACCESSORY_INFO:
+                info_type = payload[0]
+                data = bytes(payload[1:])
+                print(f"  -> RetAccessoryInfo (type=0x{info_type:02x}) data={data!r}")
+                # Spec: no ACK/reply is expected here ("the accessory must ignore the iPod's
+                # acknowledgment" for the cancel-flow case) — just move on to the next queued type.
+                request_next_accessory_info(state, ep_in_fd)
             elif lingo == LINGO_GENERAL and cmd == CMD_GET_IPOD_OPTIONS_FOR_LINGO:
                 lingo_id = payload[-1]
                 options = LINGO_OPTIONS.get(lingo_id, 0)
