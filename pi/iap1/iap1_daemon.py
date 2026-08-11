@@ -528,7 +528,7 @@ def request_next_accessory_info(state, ep_in_fd):
     if not state.accessory_info_queue:
         return
     info_type = state.accessory_info_queue.popleft()
-    os.write(ep_in_fd, build_get_accessory_info(info_type))
+    send_packet(ep_in_fd, build_get_accessory_info(info_type))
 
 
 # ---- Device (MFi) authentication (spec Commands 0x14-0x19) ----
@@ -567,14 +567,14 @@ def handle_ret_dev_authentication_info(state, payload: bytes, ep_in_fd):
         print(f"  -> RetDevAuthenticationInfo (Authentication 2.0, section {cur_section}/"
               f"{max_section}, {len(cert_chunk)} cert byte(s), {len(state.cert_buf)} total)")
         if cur_section < max_section:
-            os.write(ep_in_fd, build_ack(0x00, CMD_RET_DEV_AUTHENTICATION_INFO))
+            send_packet(ep_in_fd, build_ack(0x00, CMD_RET_DEV_AUTHENTICATION_INFO))
             return  # wait for the next section before proceeding
         print("  -> certificate complete; acking + requesting accessory info")
-        os.write(ep_in_fd, build_ack_dev_authentication_info(0x00))
+        send_packet(ep_in_fd, build_ack_dev_authentication_info(0x00))
     else:
         print(f"  -> RetDevAuthenticationInfo (Authentication {major}.{minor}); "
               "acking + requesting accessory info")
-        os.write(ep_in_fd, build_ack_dev_authentication_info(0x00))
+        send_packet(ep_in_fd, build_ack_dev_authentication_info(0x00))
 
     state.auth_major_version = major
     state.auth_signature_due = True
@@ -651,6 +651,26 @@ def ep0_event_loop(ep0_fd):
     return True, enabled
 
 
+# Minimum gap enforced between any two packets we send in a row. Added 2026-08-10 after every
+# trial showed the same failure signature: GetDevAuthenticationInfo (0x14), sent as the second of
+# two back-to-back zero-delay writes following an ACK, NEVER once got a reply — while other
+# commands sent as a lone/first write (including the higher-numbered GetAccessoryInfo, 0x27, in an
+# earlier trial) did. Its own bytes were hand-verified against the spec's worked checksum example
+# (0xEA) — framing isn't the issue. Given the ADCL ACK-routing firmware bug already found
+# elsewhere in this file (a simplistic, off-by-range dispatch table), it's plausible this head
+# unit's RFCOMM-side parser expects one packet per read() and desyncs/drops whatever follows the
+# first recognized packet when two of our writes land in the same underlying read on their end.
+# Spacing every send out by a small delay is a cheap, spec-legal way to test that (every timeout
+# this protocol defines is measured in hundreds of ms to multiple seconds — 50ms is negligible
+# against all of them).
+INTER_PACKET_DELAY_S = 0.05
+
+
+def send_packet(fd, pkt: bytes):
+    os.write(fd, pkt)
+    time.sleep(INTER_PACKET_DELAY_S)
+
+
 def write_record(fp, ts: float, data: bytes):
     """Shared timestamped-record framing (double timestamp + uint32 length + raw bytes) used by
     both the capture and unclassified files, so decode_capture.py can read either with one
@@ -682,12 +702,12 @@ def process_rx(state: State, ep_in_fd):
                 # it fall back to IdentifyDeviceLingoes (cmd=0x13) within 800ms.
                 print(f"  -> StartIDPS (transID={trans_id}) — refusing (status=0x04) to force "
                       "fallback to IdentifyDeviceLingoes")
-                os.write(ep_in_fd, build_ack(0x04, CMD_START_IDPS))
+                send_packet(ep_in_fd, build_ack(0x04, CMD_START_IDPS))
             elif lingo == LINGO_GENERAL and cmd == CMD_IDENTIFY_DEVICE_LINGOES:
                 lingoes_spoken, options, device_id = parse_identify_device_lingoes(payload)
                 print(f"  -> IdentifyDeviceLingoes (lingoesSpoken=0x{lingoes_spoken:08x}, "
                       f"options=0x{options:08x}, deviceId=0x{device_id:08x}) — acking")
-                os.write(ep_in_fd, build_ack(0x00, CMD_IDENTIFY_DEVICE_LINGOES))
+                send_packet(ep_in_fd, build_ack(0x00, CMD_IDENTIFY_DEVICE_LINGOES))
                 if device_id == 0:
                     # Cancel-mode IdentifyDeviceLingoes (General lingo only, no options, deviceId
                     # 0). Per spec's "Cancelling a Current Authentication Process With
@@ -714,24 +734,24 @@ def process_rx(state: State, ep_in_fd):
                     state.idps_done = True
                     print("  -> device requested authentication — initiating "
                           "(GetDevAuthenticationInfo)")
-                    os.write(ep_in_fd, build_get_dev_authentication_info())
+                    send_packet(ep_in_fd, build_get_dev_authentication_info())
             elif lingo == LINGO_GENERAL and cmd == CMD_UNKNOWN_0X11:
                 print(f"  -> unknown vendor cmd=0x11 (mode={CMD_0X11_REPLY_MODE}) — see "
                       "CMD_0X11_REPLY_MODE's docstring")
-                os.write(ep_in_fd, response_unknown_0x11())
+                send_packet(ep_in_fd, response_unknown_0x11())
             elif lingo == LINGO_GENERAL and cmd == CMD_REQUEST_LINGO_PROTOCOL_VERSION:
                 lingo_id = payload[-1]
                 version = LINGO_PROTOCOL_VERSIONS.get(lingo_id)
                 print(f"  -> RequestLingoProtocolVersion (lingo=0x{lingo_id:02x}) — replying "
                       f"with {'version ' + str(version) if version else 'ACK Bad Parameter '
                                                                           '(unsupported lingo)'}")
-                os.write(ep_in_fd, response_lingo_protocol_version(lingo_id))
+                send_packet(ep_in_fd, response_lingo_protocol_version(lingo_id))
             elif lingo == LINGO_GENERAL and cmd == CMD_SET_FID_TOKEN_VALUES:
                 trans_id, fields = parse_fid_token_values(payload)
                 print(f"  -> SetFIDTokenValues (transID={trans_id}, {len(fields)} token(s)):")
                 for info1, info2, data in fields:
                     print(f"       token id=(0x{info1:02x},0x{info2:02x}) data={data!r}")
-                os.write(ep_in_fd, build_ret_fid_token_value_acks(trans_id, fields))
+                send_packet(ep_in_fd, build_ret_fid_token_value_acks(trans_id, fields))
             elif lingo == LINGO_GENERAL and cmd == CMD_END_IDPS:
                 trans_id = (payload[0] << 8) | payload[1]
                 acc_status = payload[2]
@@ -739,12 +759,12 @@ def process_rx(state: State, ep_in_fd):
                 if acc_status == 0x00:
                     # Spec Table 2-94: accEndIDPSStatus=0 -> IDPSStatus=0 (all required tokens
                     # received, proceed with auth).
-                    os.write(ep_in_fd, build_idps_status(trans_id, 0x00))
+                    send_packet(ep_in_fd, build_idps_status(trans_id, 0x00))
                     if not state.idps_done:
                         state.idps_done = True
                         print("  -> IDPS complete — initiating authentication "
                               "(GetDevAuthenticationInfo)")
-                        os.write(ep_in_fd, build_get_dev_authentication_info())
+                        send_packet(ep_in_fd, build_get_dev_authentication_info())
                 elif acc_status == 0x01:
                     # Spec Table 2-94: accEndIDPSStatus=1 -> IDPSStatus=4 or 5, NEVER 0 — the
                     # accessory is asking to reset all IDPS info and retry. Previously this
@@ -753,20 +773,20 @@ def process_rx(state: State, ep_in_fd):
                     # letting it cleanly retry StartIDPS. status=4 grants the retry.
                     print("  -> accessory asked to reset IDPS and retry — replying "
                           "IDPSStatus=4, resetting session state")
-                    os.write(ep_in_fd, build_idps_status(trans_id, 0x04))
+                    send_packet(ep_in_fd, build_idps_status(trans_id, 0x04))
                     state.idps_done = False
                     state.cert_buf = bytearray()
                     state.auth_retry_counter = 0
                 else:
                     # accEndIDPSStatus=2: accessory is abandoning IDPS entirely.
                     print("  -> accessory is abandoning IDPS — replying IDPSStatus=6")
-                    os.write(ep_in_fd, build_idps_status(trans_id, 0x06))
+                    send_packet(ep_in_fd, build_idps_status(trans_id, 0x06))
             elif lingo == LINGO_GENERAL and cmd == CMD_RET_DEV_AUTHENTICATION_INFO:
                 handle_ret_dev_authentication_info(state, payload, ep_in_fd)
             elif lingo == LINGO_GENERAL and cmd == CMD_RET_DEV_AUTHENTICATION_SIGNATURE:
                 print(f"  -> RetDevAuthenticationSignature ({len(payload)}-byte signature) — "
                       "accepting unconditionally (see module docstring)")
-                os.write(ep_in_fd, build_ack_dev_authentication_status(0x00))
+                send_packet(ep_in_fd, build_ack_dev_authentication_status(0x00))
             elif lingo == LINGO_GENERAL and cmd == CMD_RET_ACCESSORY_INFO:
                 info_type = payload[0]
                 data = bytes(payload[1:])
@@ -785,7 +805,7 @@ def process_rx(state: State, ep_in_fd):
                     challenge_len = 20 if state.auth_major_version == 0x02 else 16
                     challenge = os.urandom(challenge_len)
                     print("  -> accessory info exchange complete — requesting device signature")
-                    os.write(ep_in_fd,
+                    send_packet(ep_in_fd,
                              build_get_dev_authentication_signature(challenge,
                                                                      state.auth_retry_counter))
             elif lingo == LINGO_GENERAL and cmd == CMD_GET_IPOD_OPTIONS_FOR_LINGO:
@@ -793,11 +813,11 @@ def process_rx(state: State, ep_in_fd):
                 options = LINGO_OPTIONS.get(lingo_id, 0)
                 print(f"  -> GetiPodOptionsForLingo (lingo=0x{lingo_id:02x}) — replying with "
                       f"options=0x{options:016x}")
-                os.write(ep_in_fd, build_ret_ipod_options_for_lingo(lingo_id))
+                send_packet(ep_in_fd, build_ret_ipod_options_for_lingo(lingo_id))
             elif lingo == LINGO_GENERAL and cmd in REQUEST_HANDLERS:
                 resp = REQUEST_HANDLERS[cmd]()
                 print(f"  -> recognized request cmd=0x{cmd:02x}, replying")
-                os.write(ep_in_fd, resp)
+                send_packet(ep_in_fd, resp)
             else:
                 print(f"  -> unrecognized lingo/cmd combination, no reply sent "
                       f"(logged to {state.capture_fp.name})")
