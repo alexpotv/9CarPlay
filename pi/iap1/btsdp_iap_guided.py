@@ -67,6 +67,17 @@ PROFILE_DBUS_PATH = "/9carplay/iap_bt_guided"
 IAP_BT_UUID = "00000000-deca-fade-deca-deafdecacafe"
 RFCOMM_CHANNEL = 2
 
+# The head unit searches the phone for THREE custom SPP UUIDs, stored consecutively (16 bytes each)
+# in Communication.exe's table at file offset 0x22ed14: the iAP one above, plus the two below. After
+# iAP1 auth completes, LPALM_iPodBTConnect::RequestConnectAvSpp opens one of these as the app's AV/
+# data channel; with only the iAP UUID advertised, that connect fails ("Impossible de se connecter à
+# l'appareil mobile via Bluetooth" — round 8). Advertise + accept both so the head unit can connect,
+# and log whatever it sends to reveal the app-data (AV/screen) protocol.
+AV_DATA_UUIDS = [
+    ("av1", "fa592c6e-5e85-410e-8a7e-5d6373117d39", 3),
+    ("av2", "453994d5-d58b-96f9-6616-b37f586ba2ec", 4),
+]
+
 
 # ===========================================================================
 # Hypotheses
@@ -264,10 +275,23 @@ class Hypothesis:
 # ---------------------------------------------------------------------------------------------
 
 
-# Round 8: walk the Extended Interface / iPod-Out setup phase now that we parse and ACK its 2-byte
-# commands. Success = the head unit advances through its EI sequence (SetUIMode / ResetDBHierarchy /
-# GetNumberCategorizedDBRecords / Enter/ExitExtendedInterfaceMode). ACK-type EI commands will clear;
-# Get/Return-type ones will retry — capture which, to build data handlers next.
+# ---------------------------------------------------------------------------------------------
+# ROUND 8 RESULT (runs 20260811_1610/1612, Y1 x2) — the EI phase advanced cleanly: our EI ACKs were
+# accepted and the head unit walked 0x0026 -> 0x002f -> 0x001c -> 0x002c fast (no 18s stalls), then
+# went silent and showed a NEW error: "Impossible de se connecter à l'appareil mobile via Bluetooth"
+# (cannot connect to the mobile device via Bluetooth). Firmware root cause: after iAP auth the head
+# unit runs LPALM_iPodBTConnect::RequestConnectAvSpp — it opens a SEPARATE Bluetooth SPP connection
+# for the app's AV/data, using one of two extra custom UUIDs it searched for at the start (found with
+# the iAP UUID in Communication.exe's table at 0x22ed14). We only advertised the iAP UUID, so that
+# connect failed. FIX: the harness now also advertises + accepts those two AV/data SPP services (see
+# AV_DATA_UUIDS + DataChannelProfile) and logs whatever they carry. Re-run Y1: this should clear the
+# BT-connect error and capture the app-data (AV/screen) protocol on the new channels.
+# ---------------------------------------------------------------------------------------------
+
+
+# Round 8/9: walk the Extended Interface / iPod-Out setup AND accept the AV/data SPP channel the head
+# unit opens afterward (AV_DATA_UUIDS). Success = the "cannot connect via Bluetooth" error is gone and
+# a [datachan] connection appears carrying the app AV/data protocol (logged raw for analysis).
 HYPOTHESES = [
     Hypothesis(
         "Y1", "Walk General + Extended Interface post-auth phases (auto-ACK both)",
@@ -695,6 +719,54 @@ class GuidedProfile(dbus.service.Object):
         print(f"[btsdp-guided] RequestDisconnection from {device}")
 
 
+def data_channel_session(harness, tag, fd, device):
+    """Accept the head unit's AV/data SPP connection and log everything it sends. We don't yet know
+    this channel's protocol — the point is (1) accepting it clears the 'cannot connect via Bluetooth'
+    error, and (2) the captured bytes reveal the app-data / screen protocol to implement next."""
+    sock = socket.fromfd(fd, socket.AF_BLUETOOTH, socket.SOCK_STREAM)
+    sock.setblocking(True)
+    harness.log("note", event="datachan_connected", channel=tag, device=str(device))
+    print(f"\n[datachan {tag}] *** CONNECTED from {device} — head unit opened the AV/data channel! ***")
+    try:
+        while True:
+            try:
+                chunk = sock.recv(4096)
+            except OSError as e:
+                harness.log("note", event="datachan_recv_error", channel=tag, error=str(e))
+                break
+            if not chunk:
+                break
+            harness.log("rx", note="datachan", channel=tag, raw=chunk.hex())
+            print(f"  [datachan {tag} rx] {len(chunk)} bytes: {chunk.hex()[:100]}")
+    finally:
+        harness.log("note", event="datachan_closed", channel=tag, device=str(device))
+        print(f"[datachan {tag}] closed")
+        sock.close()
+
+
+class DataChannelProfile(dbus.service.Object):
+    """A raw-logging RFCOMM listener for one of the head unit's AV/data SPP UUIDs (see AV_DATA_UUIDS)."""
+
+    def __init__(self, bus, path, harness, tag):
+        super().__init__(bus, path)
+        self.harness = harness
+        self.tag = tag
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="", out_signature="")
+    def Release(self):
+        pass
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="oha{sv}", out_signature="")
+    def NewConnection(self, device, fd, properties):
+        real_fd = fd.take()
+        threading.Thread(target=data_channel_session,
+                         args=(self.harness, self.tag, real_fd, device), daemon=True).start()
+
+    @dbus.service.method("org.bluez.Profile1", in_signature="o", out_signature="")
+    def RequestDisconnection(self, device):
+        pass
+
+
 def main():
     if os.geteuid() != 0:
         print("Must run as root", file=sys.stderr)
@@ -727,7 +799,22 @@ def main():
         "Channel": dbus.UInt16(RFCOMM_CHANNEL),
     }
     manager.RegisterProfile(PROFILE_DBUS_PATH, IAP_BT_UUID, opts)
-    print(f"[btsdp-guided] Registered profile (UUID={IAP_BT_UUID}, channel={RFCOMM_CHANNEL})")
+    print(f"[btsdp-guided] Registered iAP profile (UUID={IAP_BT_UUID}, channel={RFCOMM_CHANNEL})")
+
+    # Also advertise the two AV/data SPP services the head unit connects to after auth (see
+    # AV_DATA_UUIDS). Accepting these clears the "cannot connect via Bluetooth" error and captures
+    # the app-data protocol.
+    for tag, uuid_str, chan in AV_DATA_UUIDS:
+        path = f"/9carplay/av_{tag}"
+        DataChannelProfile(bus, path, harness, tag)
+        manager.RegisterProfile(path, uuid_str, {
+            "Name": f"9CarPlay AV data ({tag})",
+            "RequireAuthentication": dbus.Boolean(False),
+            "RequireAuthorization": dbus.Boolean(False),
+            "AutoConnect": dbus.Boolean(True),
+            "Channel": dbus.UInt16(chan),
+        })
+        print(f"[btsdp-guided] Registered AV/data profile {tag} (UUID={uuid_str}, channel={chan})")
 
     threading.Thread(target=operator_console, args=(harness,), daemon=True).start()
 
