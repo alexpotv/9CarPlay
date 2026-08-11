@@ -45,6 +45,7 @@ import datetime
 import json
 import os
 import socket
+import struct
 import sys
 import threading
 import time
@@ -71,33 +72,49 @@ RFCOMM_CHANNEL = 2
 # Hypotheses
 # ===========================================================================
 # Each hypothesis is a small bundle of behavior *flags* consumed by respond_to_packet() below.
-# Keeping them as declarative flags (rather than full handler overrides) makes the matrix easy to
-# read, extend, and reason about — every hypothesis differs only in the handful of decision points
-# that the RE above identified as genuinely uncertain:
+# Keeping them declarative (rather than full handler overrides) keeps the matrix easy to read and
+# extend — each hypothesis differs only in a handful of decision points.
 #
-#   start_idps : how we answer the head unit's StartIDPS (cmd 0x38)
-#                "accept"  -> General ACK, status 0x00 (success)
-#                "reject"  -> General ACK, status 0x04 (bad param) — still status<0x19 so it IS
-#                             delivered to the accessory; tests whether an explicit refusal makes
-#                             it fall back to the pre-IDPS / NonIDPS path
-#                "ignore"  -> send nothing; tests whether the head unit advances on its own (e.g.
-#                             times out StartIDPS and drops to the NonIDPS IdentifyDeviceLingoes flow)
-#   sync       : outgoing framing — "short" (bare 0x55, what the head unit itself transmits) or
-#                "full" (0xFF 0x55). Tests whether the accessory's RX parser is picky about the
-#                leading sync byte on OUR replies.
-#   run_idps_body : if True, answer SetFIDTokenValues (0x39) and EndIDPS (0x3B) to actually drive
-#                   IDPS to completion; if False, only StartIDPS is touched (isolates the very first
-#                   step from everything downstream).
-#   init_auth  : if True, after IDPS completes, initiate MFi device authentication
-#                (GetDevAuthenticationInfo) and carry it through, accepting whatever the accessory
-#                returns. If False, we stay silent after IDPS and watch what the head unit does.
+#   start_idps : how we answer StartIDPS (cmd 0x38). "accept" -> General ACK status 0x00;
+#                "reject" -> ACK status 0x04; "ignore" -> no reply.
+#   sync       : outgoing framing — "short" (bare 0x55, what the head unit transmits) or "full"
+#                (0xFF 0x55).
+#   run_idps_body : answer SetFIDTokenValues (0x39) and EndIDPS (0x3B) to drive IDPS to completion.
+#   init_auth  : after IDPS, initiate + carry MFi device authentication, accepting whatever comes.
+#   opt11_mode : how we answer cmd 0x11 (the head unit's iPod-options request; firmware
+#                "RetiPodOutOption"). "unknown_id" -> ACK status 0x05 (what round 1 sent);
+#                "ack_success" -> ACK status 0x00; "ret_options" -> a speculative RetiPodOptions
+#                reply (cmd 0x12 = the natural Get(0x11)/Ret(0x12) pairing), echoing the request's
+#                2-byte transID + `general_options` as an 8-byte big-endian field. The 0x12 command
+#                id and payload shape are a GUESS pending firmware/live confirmation.
+#   general_options : the 8-byte option bitmask we report for General Lingo (0x00) in both the
+#                0x4b/0x4c GetiPodOptionsForLingo reply and (for "ret_options") the 0x11 reply.
+#                Round 1 used 0x2000 (bit 0x0D, "communication with iPhone OS apps").
+#   other_lingo_options : the option bitmask reported for every NON-General lingo the head unit
+#                queries (round 1 used 0).
 #
-# The ORDER below is deliberate: start from "do exactly what the corrected spec model says"
-# (H1) and fan out one variable at a time, so a difference in outcome isolates one cause.
+# ---------------------------------------------------------------------------------------------
+# ROUND 1 RESULTS (run 20260811_113447) that motivate this round — see references/cr-v/iap.md
+# "Round 1 guided run" for the full analysis. In short, the transaction ID is a global counter and
+# all windows are one continuous conversation. Confirmed:
+#   * accept-StartIDPS + SHORT sync WORKS: the head unit acked once (0x38x1) and advanced. FULL
+#     sync (old H3) made StartIDPS loop; reject/ignore (old H4/H5) loop too. -> short sync + accept
+#     is settled; those variables are done and are NOT re-run here.
+#   * The real failure is one step later, in IDPS OPTIONS NEGOTIATION. After StartIDPS the head
+#     unit runs: cmd 0x11 (iPod-options request) -> GetiPodOptionsForLingo (0x4b) for lingoes
+#     0x00,0x02,0x03,0x04,0x0c,0x0e -> EndIDPS with accEndIDPSStatus=0x01 (= IDPS FAILED, reset &
+#     retry). It never sends SetFIDTokenValues. We answered 0x11 with "unknown id" (0x05) and
+#     reported General options=0x2000. One of those replies is very likely why the head unit
+#     rejects IDPS. This round isolates which.
+# ---------------------------------------------------------------------------------------------
+
+GENERAL_APP_BIT = 1 << 0x0D   # 0x2000 — "communication with iPhone OS 3.x applications"
+
 
 class Hypothesis:
     def __init__(self, key, title, rationale, positive_signal,
-                 start_idps="accept", sync="short", run_idps_body=True, init_auth=True):
+                 start_idps="accept", sync="short", run_idps_body=True, init_auth=True,
+                 opt11_mode="unknown_id", general_options=GENERAL_APP_BIT, other_lingo_options=0):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -106,55 +123,60 @@ class Hypothesis:
         self.sync = sync
         self.run_idps_body = run_idps_body
         self.init_auth = init_auth
+        self.opt11_mode = opt11_mode
+        self.general_options = general_options
+        self.other_lingo_options = other_lingo_options
 
 
+# Every round-2 hypothesis keeps the settled base (accept StartIDPS, short sync, run IDPS body) so
+# it reaches the options-negotiation step, and varies exactly one thing about how we answer it. The
+# oracle for all of them is the same single observation: does EndIDPS come back with
+# accEndIDPSStatus=0x00 (success — IDPS accepted) instead of 0x01, and/or does a NEW command class
+# appear afterward (SetFIDTokenValues 0x39, a GetIPodInfo request like RequestiPodName 0x07, or an
+# auth command 0x14+)? Any of those = we got past the wall.
 HYPOTHESES = [
     Hypothesis(
-        "H1", "Baseline: accept StartIDPS + full IDPS + MFi auth (short sync)",
-        "The corrected-spec path. With the ACK-drop theory refuted, a status-0x00 ACK to StartIDPS "
-        "should be delivered, so IDPS should now proceed past the retry loop. This is the current "
-        "iap1_daemon.py behavior and has NOT actually been trial-tested since the rewrite — so the "
-        "first job is simply to see whether it already works.",
-        "StartIDPS stops repeating; SetFIDTokenValues (cmd 0x39) and/or EndIDPS (0x3B) arrive; "
-        "ideally the head unit stops looping and moves toward launching.",
-        start_idps="accept", sync="short", run_idps_body=True, init_auth=True),
+        "R1", "Control: reproduce the round-1 IDPS-options failure",
+        "Exactly the round-1 baseline (0x11 -> unknown_id, General options 0x2000). Confirms the "
+        "EndIDPS accEndIDPSStatus=0x01 failure still reproduces before we change anything, so the "
+        "other rows are measured against a known-bad control on the same session.",
+        "EndIDPS arrives with accEndIDPSStatus=0x01 (fail) — same as round 1.",
+        opt11_mode="unknown_id", general_options=GENERAL_APP_BIT),
 
     Hypothesis(
-        "H2", "Accept StartIDPS but do NOT start MFi auth",
-        "Isolates IDPS from authentication. If IDPS completes here (SetFIDTokenValues + EndIDPS "
-        "seen) but H1 stalled, the problem is in our auth handling, not IDPS. If the head unit "
-        "launches WITHOUT us ever authenticating, then MFi device-auth isn't gating this path at all.",
-        "SetFIDTokenValues + EndIDPS arrive and the head unit progresses even though we never send "
-        "GetDevAuthenticationInfo.",
-        start_idps="accept", sync="short", run_idps_body=True, init_auth=False),
+        "R2", "Answer cmd 0x11 with ACK success (0x00) instead of 'unknown id'",
+        "Cheapest fix for the likeliest culprit. In round 1 we told the head unit 'unknown id' for "
+        "its iPod-options request (0x11); a plain success ACK may be enough for it to stop treating "
+        "the iPod as non-conformant and accept IDPS.",
+        "EndIDPS flips to accEndIDPSStatus=0x00, or the head unit proceeds past IDPS.",
+        opt11_mode="ack_success", general_options=GENERAL_APP_BIT),
 
     Hypothesis(
-        "H3", "Accept StartIDPS with FULL 0xFF 0x55 sync framing",
-        "Framing-sensitivity test. The head unit transmits bare-0x55 frames; we normally reply the "
-        "same way. If its RX parser actually wants the canonical 0xFF 0x55 on inbound frames, our "
-        "short-sync replies would be silently dropped and StartIDPS would loop regardless of "
-        "content — which would look exactly like the observed failure.",
-        "Behavior differs from H1 — e.g. the StartIDPS loop stops only here — implicating outbound "
-        "framing as the real issue.",
-        start_idps="accept", sync="full", run_idps_body=True, init_auth=True),
+        "R3", "Answer cmd 0x11 with a RetiPodOptions reply (cmd 0x12, SPECULATIVE)",
+        "The firmware receives a 'RetiPodOutOption' from the iPod, implying 0x11 wants a real "
+        "options *reply*, not an ACK. This sends cmd 0x12 (guessed Get/Ret pairing) echoing the "
+        "transID + General options. Command id/payload are a guess — a malformed reply may itself "
+        "be rejected, so compare carefully against R2.",
+        "EndIDPS flips to 0x00 / head unit proceeds — and it does NOT if R2 already worked, telling "
+        "us whether 0x11 wants an ACK or a data reply.",
+        opt11_mode="ret_options", general_options=GENERAL_APP_BIT),
 
     Hypothesis(
-        "H4", "Explicitly REJECT StartIDPS (ACK status 0x04)",
-        "Tests the NonIDPS fallback. The firmware has a `[ADCLS] NonIDPS` path. A delivered refusal "
-        "(status 0x04 is < 0x19, so it reaches the accessory) may make the head unit abandon IDPS "
-        "and drop to the older IdentifyDeviceLingoes / NonIDPS identification flow.",
-        "Head unit stops sending StartIDPS and instead sends IdentifyDeviceLingoes (cmd 0x13) or "
-        "GetAccessoryInfo (0x27) — i.e. it switched paths.",
-        start_idps="reject", sync="short", run_idps_body=False, init_auth=False),
+        "R4", "Drop the app-communication bit: General options = 0",
+        "Tests whether the option BITS (not the 0x11 reply) are what the head unit rejects. If "
+        "reporting 0x2000 for General Lingo is unexpected during IDPS, zeroing it may let IDPS "
+        "complete. Isolates the 0x4b/0x4c option value from the 0x11 question.",
+        "EndIDPS flips to 0x00 with options=0, implicating the option bitmask rather than 0x11.",
+        opt11_mode="unknown_id", general_options=0),
 
     Hypothesis(
-        "H5", "IGNORE StartIDPS entirely (never reply to 0x38)",
-        "Tests whether the head unit advances on its own after StartIDPS times out, without any "
-        "reply from us at all. Distinguishes 'it needs a specific answer' from 'it needs us to stay "
-        "quiet and will fall through by timeout'.",
-        "After several unanswered StartIDPS, a DIFFERENT command appears (IdentifyDeviceLingoes, "
-        "GetAccessoryInfo, or an auth command) — i.e. it fell through by timeout.",
-        start_idps="ignore", sync="short", run_idps_body=False, init_auth=False),
+        "R5", "Combined best guess: 0x11 ACK success + General app bit + claim every queried lingo",
+        "If no single-variable change is enough, this stacks the most plausible ones: acknowledge "
+        "0x11, keep the app bit for General, and report a non-zero option set for the other lingoes "
+        "the head unit specifically asked about (0x02/0x03/0x04/0x0c/0x0e) in case it requires the "
+        "iPod to claim support for them.",
+        "EndIDPS flips to 0x00 / head unit proceeds — then peel back which piece mattered.",
+        opt11_mode="ack_success", general_options=GENERAL_APP_BIT, other_lingo_options=GENERAL_APP_BIT),
 ]
 
 
@@ -257,10 +279,16 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
         out.append(iap.build_ack_dev_authentication_status(0x00))
         return out
 
-    # ---- Identification-time discovery queries (answered for every hypothesis, so the head unit
-    # can finish identifying us regardless of the StartIDPS policy under test) ----
+    # ---- GetiPodOptionsForLingo (0x4b): report per-lingo option bits. The queried lingo id is the
+    # LAST payload byte (the head unit prefixes a 2-byte transID). General Lingo (0x00) gets
+    # `general_options`; every other lingo gets `other_lingo_options` — both configurable per
+    # hypothesis (round 1 rejected IDPS with General=0x2000/others=0, so these are under test). ----
     if cmd == iap.CMD_GET_IPOD_OPTIONS_FOR_LINGO:
-        out.append(iap.build_ret_ipod_options_for_lingo(payload[-1]))
+        lingo_id = payload[-1]
+        options = hyp.general_options if lingo_id == iap.LINGO_GENERAL else hyp.other_lingo_options
+        reply = iap.build_packet(iap.LINGO_GENERAL, iap.CMD_RET_IPOD_OPTIONS_FOR_LINGO,
+                                 bytes([lingo_id]) + struct.pack(">Q", options))
+        out.append(reply)
         return out
     if cmd == iap.CMD_REQUEST_LINGO_PROTOCOL_VERSION:
         out.append(iap.response_lingo_protocol_version(payload[-1]))
@@ -272,9 +300,18 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
         out.append(iap.REQUEST_HANDLERS[cmd]())
         return out
     if cmd == iap.CMD_UNKNOWN_0X11:
-        # Reserved/undocumented probe the head unit sends once after StartIDPS. Mirror the
-        # production daemon: honest "unknown ID" ACK (status 0x05, < 0x19 so delivered).
-        out.append(iap.build_ack(0x05, iap.CMD_UNKNOWN_0X11))
+        # The head unit's iPod-options request (firmware receives "RetiPodOutOption" in reply). How
+        # we answer is the primary round-2 variable — see Hypothesis.opt11_mode.
+        if hyp.opt11_mode == "ack_success":
+            out.append(iap.build_ack(0x00, iap.CMD_UNKNOWN_0X11))
+        elif hyp.opt11_mode == "ret_options":
+            # Speculative RetiPodOptions: cmd 0x12 (guessed Get/Ret pairing), echo the request's
+            # 2-byte transID + 8-byte big-endian option field. Shape unconfirmed — compare vs R2.
+            trans_id = payload[:2] if len(payload) >= 2 else b"\x00\x00"
+            out.append(iap.build_packet(iap.LINGO_GENERAL, 0x12,
+                                        trans_id + struct.pack(">Q", hyp.general_options)))
+        else:  # "unknown_id" — what round 1 sent
+            out.append(iap.build_ack(0x05, iap.CMD_UNKNOWN_0X11))
         return out
 
     return out   # unrecognized -> logged by caller, no reply
@@ -374,6 +411,8 @@ def operator_console(harness):
         print(f"  Positive sign:  {hyp.positive_signal}")
         print(f"  Behavior:       StartIDPS={hyp.start_idps}  sync={hyp.sync}  "
               f"idps_body={hyp.run_idps_body}  init_auth={hyp.init_auth}")
+        print(f"                  cmd0x11={hyp.opt11_mode}  general_opts=0x{hyp.general_options:x}  "
+              f"other_lingo_opts=0x{hyp.other_lingo_options:x}")
         cmd = _ask("\n  Press Enter to ARM this hypothesis (or s/r/q): ").lower()
         if cmd == "q":
             break
@@ -386,7 +425,9 @@ def operator_console(harness):
         harness.note_txt(f"\n===== WINDOW {harness.window_id} :: {hyp.key} — {hyp.title} =====")
         harness.log("note", event="armed", title=hyp.title,
                     start_idps=hyp.start_idps, sync=hyp.sync,
-                    run_idps_body=hyp.run_idps_body, init_auth=hyp.init_auth)
+                    run_idps_body=hyp.run_idps_body, init_auth=hyp.init_auth,
+                    opt11_mode=hyp.opt11_mode, general_options=hyp.general_options,
+                    other_lingo_options=hyp.other_lingo_options)
         print(f"\n  >>> ARMED ({hyp.key}). Now LAUNCH HondaLink on the head unit and watch it.")
         print("      (If it's already open, back out and re-enter the HondaLink source to force a")
         print("       fresh connection.) Live rx/tx traffic prints below as it happens.")
