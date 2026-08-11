@@ -247,6 +247,18 @@ LINGO_OPTIONS = {
     LINGO_GENERAL: LINGO_GENERAL_OPTIONS_COMM_WITH_APPS,
 }
 
+# Spec Table 2-33's bit positions, mirrored here as a bitmask of which Device Lingoes Spoken bits
+# our fake "iPod" actually implements anything for — General Lingo (bit 0) only; everything we
+# need (IDPS/auth, GetAccessoryInfo, and eventually OpenDataSessionForProtocol for app launch) is
+# General Lingo. Used by CMD_IDENTIFY_DEVICE_LINGOES's handling, which was previously ACKing every
+# IdentifyDeviceLingoes with status 0x00 (success) regardless of what was actually claimed — a live
+# trial (2026-08-10) showed the accessory identifying with lingoesSpoken=0x1d (bits 0,2,3,4 =
+# General + Simple Remote + Display Remote + Extended Interface), none of which beyond General we
+# implement. Per spec's own text: "If the device claims a Device Lingo Spoken that is not supported
+# by the attached iPod, the iPod returns a command failed (0x02) ACK" — we were violating this,
+# unconditionally lying that we support lingoes we don't.
+SUPPORTED_LINGOES_MASK = 1 << LINGO_GENERAL
+
 SYNC_SHORT = SYNC[1:]  # bare 0x55 — the real framing for every non-UART transport, per spec.
 
 
@@ -705,10 +717,22 @@ def process_rx(state: State, ep_in_fd):
                 send_packet(ep_in_fd, build_ack(0x04, CMD_START_IDPS))
             elif lingo == LINGO_GENERAL and cmd == CMD_IDENTIFY_DEVICE_LINGOES:
                 lingoes_spoken, options, device_id = parse_identify_device_lingoes(payload)
+                unsupported = lingoes_spoken & ~SUPPORTED_LINGOES_MASK
                 print(f"  -> IdentifyDeviceLingoes (lingoesSpoken=0x{lingoes_spoken:08x}, "
-                      f"options=0x{options:08x}, deviceId=0x{device_id:08x}) — acking")
-                send_packet(ep_in_fd, build_ack(0x00, CMD_IDENTIFY_DEVICE_LINGOES))
-                if device_id == 0:
+                      f"options=0x{options:08x}, deviceId=0x{device_id:08x})")
+                if unsupported:
+                    # Spec: "If the device claims a Device Lingo Spoken that is not supported by
+                    # the attached iPod, the iPod returns a command failed (0x02) ACK" — see
+                    # SUPPORTED_LINGOES_MASK's docstring for why we were getting this wrong.
+                    print(f"     lingoesSpoken includes 0x{unsupported:08x} we don't support — "
+                          "ACK command failed (0x02)")
+                    send_packet(ep_in_fd, build_ack(0x02, CMD_IDENTIFY_DEVICE_LINGOES))
+                    lingoes_accepted = False
+                else:
+                    lingoes_accepted = True
+                    print("  -> acking")
+                    send_packet(ep_in_fd, build_ack(0x00, CMD_IDENTIFY_DEVICE_LINGOES))
+                if lingoes_accepted and device_id == 0:
                     # Cancel-mode IdentifyDeviceLingoes (General lingo only, no options, deviceId
                     # 0). Per spec's "Cancelling a Current Authentication Process With
                     # IdentifyDeviceLingoes": "After the ACK response, the iPod will send the
@@ -727,7 +751,7 @@ def process_rx(state: State, ep_in_fd):
                     print("  -> cancel-mode identification — requesting accessory info "
                           f"(GetAccessoryInfo x{len(state.accessory_info_queue)})")
                     request_next_accessory_info(state, ep_in_fd)
-                elif not state.idps_done:
+                elif lingoes_accepted and not state.idps_done:
                     # Nonzero device ID: the accessory wants authentication. Per spec Table 2-5
                     # step 1, GetDevAuthenticationInfo comes first — GetAccessoryInfo (steps 4-5)
                     # is deferred until after AckDevAuthenticationInfo (see above).
