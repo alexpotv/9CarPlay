@@ -131,6 +131,26 @@ CMD_RETURN_SERIAL_NUM = 0x0C          # was 0x10
 CMD_REQUEST_MODEL_NUM = 0x0D          # was 0x1F (collided with AckiPodAuthenticationStatus)
 CMD_RETURN_MODEL_NUM = 0x0E           # was 0x20
 
+# RequestLingoProtocolVersion/ReturnLingoProtocolVersion (spec Tables 2-30/2-31) — a real,
+# original-1.00-era General Lingo command we'd never implemented until a live trial (2026-08-10)
+# showed the accessory sending it unanswered, right after we started refusing StartIDPS. Per spec:
+# "When an iPod does not respond to GetiPodOptionsForLingo, the accessory may use
+# RequestLingoProtocolVersion to determine what iAP features are available" — i.e. this is exactly
+# the fallback discovery path for the pre-IDPS identification flow we're now forcing the accessory
+# into, so leaving it unanswered was very plausibly why IdentifyDeviceLingoes kept being resent
+# instead of the exchange moving forward.
+CMD_REQUEST_LINGO_PROTOCOL_VERSION = 0x0F  # Device-to-iPod: [LingoId] (1 byte).
+CMD_RETURN_LINGO_PROTOCOL_VERSION = 0x10   # iPod-to-Device: [LingoId, majorVer, minorVer].
+
+# Per spec, only report a version for lingoes we actually implement anything of — General Lingo
+# (0x00) only, and specifically version 1.0 (not 1.09/IDPS-era), to stay consistent with our
+# StartIDPS refusal: we're telling the accessory we're an iPod that predates IDPS. For any other
+# lingo, the spec's own documented behavior for "invalid or unsupported lingo ID" is an ACK with
+# Bad Parameter status, not a fabricated version — see the handler in process_rx.
+LINGO_PROTOCOL_VERSIONS = {
+    LINGO_GENERAL: (1, 0),
+}
+
 # ---- cmd=0x11 — officially "Reserved" in spec Table 2-9 (0x11-0x12 unassigned in any public
 # protocol version), but this head unit sends it, once, right after acking StartIDPS, every trial.
 # Two hypotheses, both implemented, toggled by CMD_0X11_REPLY_MODE for live A/B testing:
@@ -356,6 +376,17 @@ def response_serial_num() -> bytes:
 def response_model_num() -> bytes:
     payload = GENERAL_LINGO_IDENTITY["model_number"].encode("ascii") + b"\x00"
     return build_packet(LINGO_GENERAL, CMD_RETURN_MODEL_NUM, payload)
+
+
+def response_lingo_protocol_version(lingo_id: int) -> bytes:
+    """Spec Table 2-31: [LingoId, majorVer, minorVer]. If we don't have a version for the
+    requested lingo, spec says to ACK with Bad Parameter (0x04) instead of fabricating one."""
+    version = LINGO_PROTOCOL_VERSIONS.get(lingo_id)
+    if version is None:
+        return build_ack(0x04, CMD_REQUEST_LINGO_PROTOCOL_VERSION)
+    major, minor = version
+    return build_packet(LINGO_GENERAL, CMD_RETURN_LINGO_PROTOCOL_VERSION,
+                         bytes([lingo_id, major, minor]))
 
 
 REQUEST_HANDLERS = {
@@ -612,6 +643,13 @@ def process_rx(state: State, ep_in_fd):
                 print(f"  -> unknown vendor cmd=0x11 (mode={CMD_0X11_REPLY_MODE}) — see "
                       "CMD_0X11_REPLY_MODE's docstring")
                 os.write(ep_in_fd, response_unknown_0x11())
+            elif lingo == LINGO_GENERAL and cmd == CMD_REQUEST_LINGO_PROTOCOL_VERSION:
+                lingo_id = payload[-1]
+                version = LINGO_PROTOCOL_VERSIONS.get(lingo_id)
+                print(f"  -> RequestLingoProtocolVersion (lingo=0x{lingo_id:02x}) — replying "
+                      f"with {'version ' + str(version) if version else 'ACK Bad Parameter '
+                                                                          '(unsupported lingo)'}")
+                os.write(ep_in_fd, response_lingo_protocol_version(lingo_id))
             elif lingo == LINGO_GENERAL and cmd == CMD_SET_FID_TOKEN_VALUES:
                 trans_id, fields = parse_fid_token_values(payload)
                 print(f"  -> SetFIDTokenValues (transID={trans_id}, {len(fields)} token(s)):")
