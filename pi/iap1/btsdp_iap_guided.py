@@ -134,7 +134,8 @@ class Hypothesis:
     def __init__(self, key, title, rationale, positive_signal,
                  start_idps="accept", sync="short", run_idps_body=True, init_auth=True,
                  opt11_mode="unknown_id", general_options=GENERAL_APP_BIT, other_lingo_options=0,
-                 echo_transid=True, auth_trigger="after_endidps", force_idps_success=False):
+                 echo_transid=True, auth_trigger="after_endidps", force_idps_success=False,
+                 cert_section_mode="accept_first"):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -155,6 +156,13 @@ class Hypothesis:
         # force_idps_success: reply to EndIDPS with IDPSStatus=0x00 even when the head unit sent
         # accEndIDPSStatus=0x01. Spec-invalid, but tests whether asserting success pushes it forward.
         self.force_idps_success = force_idps_success
+        # cert_section_mode: how to respond to a NON-final RetDevAuthenticationInfo cert section.
+        #   "accept_first" -> ignore sectioning, send AckDevAuthenticationInfo + the signature
+        #                     challenge after the first section (we don't validate the cert anyway)
+        #   "ack_sections" -> plain ACK to pull the next section (U1 did this; head unit went silent)
+        #   "poll_next"    -> re-send GetDevAuthenticationInfo to pull the next section
+        #   "ack_transid"  -> plain ACK, but with the cert's 2-byte transID prefix echoed
+        self.cert_section_mode = cert_section_mode
 
 
 # ---------------------------------------------------------------------------------------------
@@ -173,47 +181,57 @@ class Hypothesis:
 # ---------------------------------------------------------------------------------------------
 
 
-# Round 4 puts the large-packet fix to work: complete the MFi authentication the head unit was
-# already offering, then watch what unlocks next. Success signals, strongest first: we receive
-# RetDevAuthenticationSignature (0x18) and ACK it (0x19) without error; the IDPS loop STOPS; a brand
-# new command class appears — iPod-preferences / SystemInit (RetiPodPreferences), GetIPodInfo
-# (RequestiPodName 0x07 etc.), or OpenDataSessionForProtocol (0x3f) — i.e. the head unit moves past
-# identification toward launching the app. Any of those is uncharted territory past every prior wall.
+# ---------------------------------------------------------------------------------------------
+# ROUND 4 RESULTS (runs 20260811_1320-1323, U1-U4) — auth is now READABLE and the IDPS loop broke
+# for the first time. U1/U4 (force IDPS success + 0x14 after FID tokens) got the head unit to send
+# its cert (0x15), our new large-packet parser READ it, and we replied a plain ACK for the (non-
+# final, cur=0/max=1) section... after which the head unit went SILENT for ~14s and never sent cert
+# section 1. Crucially the IDPS loop STOPPED (one cycle, not endless) — so we're now genuinely in
+# the post-IDPS AUTH phase, just stuck on how to advance the sectioned certificate. U2 (no force
+# success) got no cert and kept looping, re-confirming force-IDPS-success is required to release it.
+#
+# So the plain-ACK-per-section approach doesn't pull section 1 on this head unit. Round 5 resolves
+# how to advance the cert via `cert_section_mode`. Since we never validate the certificate anyway,
+# the leading bet is to accept after the first section and jump straight to the signature challenge.
+# ---------------------------------------------------------------------------------------------
+
+
+# Round 5 keeps the settled auth path (force IDPS success + 0x14 after FID tokens + large-packet
+# parse) and varies ONLY how we answer a non-final cert section. Success = the head unit sends
+# RetDevAuthenticationSignature (0x18), we ACK status (0x19), and a NEW command class appears
+# (RetiPodPreferences / GetIPodInfo 0x07 / OpenDataSession 0x3f) — past every wall so far.
 HYPOTHESES = [
     Hypothesis(
-        "U1", "Complete MFi auth: 0x14 after FID tokens + force IDPS success (T5 config + parser fix)",
-        "The winning round-3 combo, now that we can actually read the cert. We send "
-        "GetDevAuthenticationInfo after the FID tokens and assert IDPSStatus=0x00; the head unit "
-        "sends its cert (0x15, large packet); we ACK sections, request its signature (0x17); it "
-        "signs (0x18); we ACK status (0x19). This should finish authentication for the first time.",
-        "0x18 (signature) received + 0x19 sent with no loop restart; then a NEW command class "
-        "(RetiPodPreferences / GetIPodInfo 0x07 / OpenDataSession 0x3f) appears.",
-        auth_trigger="after_fidtokens", force_idps_success=True),
+        "V1", "Accept cert after first section -> jump to signature challenge",
+        "We don't validate the certificate, so there's no need to collect every section. On the "
+        "first RetDevAuthenticationInfo we send AckDevAuthenticationInfo (0x16) + "
+        "GetDevAuthenticationSignature (0x17) immediately, skipping the sectioning the head unit "
+        "wouldn't advance in U1. If the head unit is happy to be challenged now, it signs (0x18).",
+        "Head unit replies RetDevAuthenticationSignature (0x18); we ACK 0x19; a new command class "
+        "appears (preferences / GetIPodInfo / OpenDataSession).",
+        auth_trigger="after_fidtokens", force_idps_success=True, cert_section_mode="accept_first"),
 
     Hypothesis(
-        "U2", "Complete MFi auth WITHOUT forcing IDPS success",
-        "Same as U1 but reply to EndIDPS per spec (0x04 on the head unit's 0x01). Tests whether, now "
-        "that we handle the cert, auth proceeds on its own — or whether force-IDPS-success is still "
-        "required to make the head unit release the certificate.",
-        "If the cert (0x15) still arrives and auth completes, force-success wasn't essential; if no "
-        "0x15 appears, it was.",
-        auth_trigger="after_fidtokens", force_idps_success=False),
+        "V2", "Pull next cert section by re-sending GetDevAuthenticationInfo",
+        "Maybe the head unit advances sections when re-polled rather than plain-ACKed. On a non-final "
+        "section, re-send GetDevAuthenticationInfo (0x14) to request the next.",
+        "Cert section 1 (another 0x15) arrives — then the flow continues to the challenge.",
+        auth_trigger="after_fidtokens", force_idps_success=True, cert_section_mode="poll_next"),
 
     Hypothesis(
-        "U3", "Force IDPS success first, THEN initiate auth (cleaner ordering)",
-        "Assert IDPSStatus=0x00 on EndIDPS and only then send GetDevAuthenticationInfo — the more "
-        "spec-plausible order (identify, close IDPS, then authenticate). Compare against U1 in case "
-        "the head unit prefers auth to start after IDPS is closed rather than mid-window.",
-        "Same completion signals as U1; tells us the head unit's preferred auth-start ordering.",
-        auth_trigger="after_endidps", force_idps_success=True),
+        "V3", "Advance cert section with a transID-echoing ACK",
+        "U1's plain ACK carried no transID; everything else on this head unit correlates by the "
+        "2-byte transID. Echo the cert's transID prefix in the section ACK and see if that pulls "
+        "section 1.",
+        "Cert section 1 arrives after the transID-tagged ACK.",
+        auth_trigger="after_fidtokens", force_idps_success=True, cert_section_mode="ack_transid"),
 
     Hypothesis(
-        "U4", "U1 + ACK 0x11 + claim every queried lingo (kitchen sink)",
-        "U1 with the extra identification niceties stacked on, as a fallback if U1 completes auth but "
-        "stalls at the next step for an identification-completeness reason.",
-        "Auth completes AND the head unit advances further than U1 did.",
-        auth_trigger="after_fidtokens", force_idps_success=True, opt11_mode="ack_success",
-        other_lingo_options=GENERAL_APP_BIT),
+        "V4", "Control: reproduce U1 (plain ACK per section, expect the silent stall)",
+        "U1 exactly — plain ACK for the non-final section. Confirms the ~14s post-ACK silence still "
+        "reproduces before the other rows change the section handling.",
+        "Cert (0x15) arrives, we plain-ACK, head unit goes silent — same as U1.",
+        auth_trigger="after_fidtokens", force_idps_success=True, cert_section_mode="ack_sections"),
 ]
 
 
@@ -312,14 +330,26 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
     # a plain ACK to pull the next, then AckDevAuthenticationInfo(0x16) + GetDevAuthenticationSignature
     # (0x17) on the final one. (Confirmed on the wire 2026-08-11; see references/cr-v/iap.md.) ----
     if hyp.init_auth and cmd == iap.CMD_RET_DEV_AUTHENTICATION_INFO:
-        body = payload[2:] if (len(payload) >= 6 and payload[0] == 0 and payload[1] == 0
-                               and payload[2] in (0x01, 0x02)) else payload
+        trans_prefix = payload[:2] if (len(payload) >= 6 and payload[0] == 0 and payload[1] == 0
+                                       and payload[2] in (0x01, 0x02)) else b""
+        body = payload[len(trans_prefix):]
         major = body[0] if body else 1
-        if major == 0x02 and len(body) >= 4:
-            cur_section, max_section = body[2], body[3]
-            if cur_section < max_section:
+        non_final = major == 0x02 and len(body) >= 4 and body[2] < body[3]
+        if non_final:
+            # Round-4 U1 showed a plain ACK here does NOT pull cert section 1 — the head unit goes
+            # silent. cert_section_mode picks how to advance (round 5):
+            if hyp.cert_section_mode == "ack_sections":       # U1 behavior (control) — stalls
                 out.append(iap.build_ack(0x00, iap.CMD_RET_DEV_AUTHENTICATION_INFO))
-                return out   # request the next cert section before proceeding
+                return out
+            if hyp.cert_section_mode == "ack_transid":        # plain ACK but echo the transID prefix
+                out.append(iap.build_packet(iap.LINGO_GENERAL, iap.CMD_ACK,
+                                            trans_prefix + bytes([0x00, iap.CMD_RET_DEV_AUTHENTICATION_INFO])))
+                return out
+            if hyp.cert_section_mode == "poll_next":          # re-request via GetDevAuthenticationInfo
+                out.append(iap.build_get_dev_authentication_info())
+                return out
+            # "accept_first": fall through — we don't validate the cert, so accept after one section
+            # and jump straight to the challenge (0x16 + 0x17).
         out.append(iap.build_ack_dev_authentication_info(0x00))
         challenge_len = 20 if major == 0x02 else 16
         out.append(iap.build_get_dev_authentication_signature(os.urandom(challenge_len), 1))
@@ -474,7 +504,7 @@ def operator_console(harness):
         print(f"                  echo_transid={hyp.echo_transid}  cmd0x11={hyp.opt11_mode}  "
               f"general_opts=0x{hyp.general_options:x}  other_lingo_opts=0x{hyp.other_lingo_options:x}")
         print(f"                  auth_trigger={hyp.auth_trigger}  "
-              f"force_idps_success={hyp.force_idps_success}")
+              f"force_idps_success={hyp.force_idps_success}  cert_section={hyp.cert_section_mode}")
         cmd = _ask("\n  Press Enter to ARM this hypothesis (or s/r/q): ").lower()
         if cmd == "q":
             break
@@ -490,7 +520,8 @@ def operator_console(harness):
                     run_idps_body=hyp.run_idps_body, init_auth=hyp.init_auth,
                     opt11_mode=hyp.opt11_mode, general_options=hyp.general_options,
                     other_lingo_options=hyp.other_lingo_options, echo_transid=hyp.echo_transid,
-                    auth_trigger=hyp.auth_trigger, force_idps_success=hyp.force_idps_success)
+                    auth_trigger=hyp.auth_trigger, force_idps_success=hyp.force_idps_success,
+                    cert_section_mode=hyp.cert_section_mode)
         print(f"\n  >>> ARMED ({hyp.key}). Now LAUNCH HondaLink on the head unit and watch it.")
         print("      (If it's already open, back out and re-enter the HondaLink source to force a")
         print("       fresh connection.) Live rx/tx traffic prints below as it happens.")
