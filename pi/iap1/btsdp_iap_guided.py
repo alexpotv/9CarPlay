@@ -251,25 +251,40 @@ class Hypothesis:
 # ---------------------------------------------------------------------------------------------
 
 
-# Round 7: authentication is solved. Now walk the post-auth SystemInit / preferences phase. Success =
-# the head unit keeps issuing commands (preferences, event-notification, extended-interface) that we
-# ACK/answer, advancing toward the app launch / iPod-Out video setup — captured for the next round.
+# ---------------------------------------------------------------------------------------------
+# ROUND 7 RESULT (run 20260811_1517, X1) — the post-auth sequence started flowing. After auth the
+# head unit sent General Lingo 0x4f, 0x24, 0x05 (we auto-ACKed; it advanced) — 0x05 is
+# EnterExtendedInterfaceMode — and then SWITCHED INTO EXTENDED INTERFACE mode, sending Lingo 0x04
+# commands (0x0026, 0x002f, ...) with 2-BYTE command IDs. Two gaps this exposed: (1) our parser read
+# commands as 1 byte, mis-parsing every EI command; (2) autoack only covered General Lingo, so the
+# EI commands went unanswered and timed out every 18s. Both fixed: iap1_daemon.try_parse_packet now
+# reads 2-byte command IDs for Lingo 0x04, and the harness auto-ACKs EI commands with an EI ACK
+# (cmd 0x0001, [transID, status, ackedCmdId]). This is the iPod-Out UI/DB setup (SetUIMode,
+# ResetDBHierarchy, GetNumberCategorizedDBRecords, ...) that precedes video.
+# ---------------------------------------------------------------------------------------------
+
+
+# Round 8: walk the Extended Interface / iPod-Out setup phase now that we parse and ACK its 2-byte
+# commands. Success = the head unit advances through its EI sequence (SetUIMode / ResetDBHierarchy /
+# GetNumberCategorizedDBRecords / Enter/ExitExtendedInterfaceMode). ACK-type EI commands will clear;
+# Get/Return-type ones will retry — capture which, to build data handlers next.
 HYPOTHESES = [
     Hypothesis(
-        "X1", "Walk the post-auth phase: auto-ACK unknown commands with transID",
-        "Full auth (the proven W1 path) + autoack_unknown: after auth we transID-ACK every "
-        "otherwise-unrecognized General Lingo command (starting with 0x4f) to keep the SystemInit / "
-        "preferences sequence moving and capture what the head unit asks for.",
-        "The head unit issues a sequence of NEW commands past 0x4f (SetiPodPreferences / "
-        "GetiPodPreferences / event-notification) — each new cmd id + payload is logged for analysis.",
+        "Y1", "Walk General + Extended Interface post-auth phases (auto-ACK both)",
+        "Full auth (proven W1 path) + autoack_unknown, now covering BOTH General Lingo (0x4f/0x24/"
+        "0x05...) and Extended Interface Lingo (0x04, 2-byte commands). transID-ACK everything to "
+        "walk the iPod-Out UI/DB setup as far as it will go and capture the full command sequence.",
+        "The head unit advances through a run of EI commands (SetUIMode / ResetDBHierarchy / "
+        "GetNumberCategorizedDBRecords / Enter-ExitExtendedInterfaceMode); each cmd id + payload is "
+        "logged. Any that keep retrying every ~18s want a DATA reply, not an ACK — noted for next round.",
         cert_section_mode="ack_transid", auth_transid=True,
         auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True),
 
     Hypothesis(
-        "X2", "Control: complete auth, then STOP (no auto-ACK) — confirm 0x4f reproduces",
-        "The clean W1 config with no post-auth handling. Confirms we reliably reach cmd 0x4f right "
-        "after AckDevAuthenticationStatus (0x19), as the baseline the auto-ACK walk builds on.",
-        "Auth completes (0x18 -> 0x19) and cmd 0x4f arrives, then silence (we don't answer it).",
+        "Y2", "Control: complete auth, then STOP (no post-auth auto-ACK at all)",
+        "auth completes but we answer nothing after 0x19. Confirms we still reliably reach the "
+        "post-auth phase (cmd 0x4f) as the baseline for the Y1 walk.",
+        "Auth completes (0x18 -> 0x19), cmd 0x4f arrives, then silence.",
         cert_section_mode="ack_transid", auth_transid=True,
         auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=False),
 ]
@@ -326,11 +341,31 @@ class Harness:
             return self.rx_counts[cmd]
 
 
+def build_ei_packet(cmd16, payload):
+    """Frame an Extended Interface Lingo (0x04) packet, whose command ID is 2 bytes wide (unlike the
+    1-byte General Lingo). Honors OUTGOING_SYNC_MODE like iap1_daemon.build_packet."""
+    body_payload = bytes([iap.LINGO_EXTENDED_INTERFACE, (cmd16 >> 8) & 0xFF, cmd16 & 0xFF]) + payload
+    body = bytes([len(body_payload)]) + body_payload
+    checksum = iap.iap1_checksum(body)
+    sync = iap.SYNC if iap.OUTGOING_SYNC_MODE == "full" else iap.SYNC_SHORT
+    return sync + body + bytes([checksum])
+
+
 def respond_to_packet(harness, hyp, lingo, cmd, payload):
     """Return a list of raw packets (bytes) to send in reply to one received iAP1 packet, per the
     armed hypothesis. Reuses iap1_daemon's builders so the wire format stays identical to the
     production daemon; only the *policy* (which of them to send, and when) varies per hypothesis."""
     out = []
+    if lingo == iap.LINGO_EXTENDED_INTERFACE:
+        # Post-auth, the head unit enters Extended Interface mode (via General 0x05) and drives the
+        # iPod-Out UI/DB setup with 2-byte EI commands (cmd is a 16-bit int here; iap1_daemon parses
+        # the width). We don't yet know each EI command's reply, so autoack answers with an EI ACK
+        # (cmd 0x0001, payload [transID(2), status=0x00, ackedCmdId(2)]) to keep it talking. Get/
+        # Return-type EI commands (that want data) will retry — revealing which need real handlers.
+        if hyp.autoack_unknown:
+            trans_id = payload[:2] if len(payload) >= 2 else b"\x00\x00"
+            out.append(build_ei_packet(0x0001, trans_id + bytes([0x00, (cmd >> 8) & 0xFF, cmd & 0xFF])))
+        return out
     if lingo != iap.LINGO_GENERAL:
         return out
 

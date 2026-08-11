@@ -317,9 +317,7 @@ def _parse_at(buf: bytes, header_len: int):
         checksum = buf[header_len + 3 + big_len]
         if iap1_checksum(body) != checksum:
             return "bad_checksum"
-        lingo = buf[header_len + 3]
-        cmd = buf[header_len + 4]
-        payload = bytes(buf[header_len + 5:header_len + 3 + big_len])
+        lingo, cmd, payload = _split_lingo_cmd(buf, header_len + 3, header_len + 3 + big_len)
         return lingo, cmd, payload, total_len
     total_len = header_len + 1 + length + 1
     if len(buf) < total_len:
@@ -328,10 +326,28 @@ def _parse_at(buf: bytes, header_len: int):
     checksum = buf[header_len + 1 + length]
     if iap1_checksum(body) != checksum:
         return "bad_checksum"
-    lingo = buf[header_len + 1]
-    cmd = buf[header_len + 2]
-    payload = bytes(buf[header_len + 3:header_len + 1 + length])
+    lingo, cmd, payload = _split_lingo_cmd(buf, header_len + 1, header_len + 1 + length)
     return lingo, cmd, payload, total_len
+
+
+# Lingoes whose command IDs are 2 bytes wide, not 1. Extended Interface (0x04) is the confirmed one
+# (the head unit uses it for the post-auth iPod-Out UI/DB setup, seen on the wire 2026-08-11). Most
+# other lingoes (General, Simple Remote) use 1-byte command IDs.
+TWO_BYTE_CMD_LINGOES = frozenset({LINGO_EXTENDED_INTERFACE})
+
+
+def _split_lingo_cmd(buf, lingo_off, end):
+    """Extract (lingo, cmd, payload) from a parsed body, honoring 2-byte command IDs for the lingoes
+    in TWO_BYTE_CMD_LINGOES. `cmd` is returned as an int (0x00-0xff for 1-byte lingoes, 0x0000-0xffff
+    for 2-byte ones)."""
+    lingo = buf[lingo_off]
+    if lingo in TWO_BYTE_CMD_LINGOES and end - lingo_off >= 3:
+        cmd = (buf[lingo_off + 1] << 8) | buf[lingo_off + 2]
+        payload = bytes(buf[lingo_off + 3:end])
+    else:
+        cmd = buf[lingo_off + 1]
+        payload = bytes(buf[lingo_off + 2:end])
+    return lingo, cmd, payload
 
 
 def try_parse_packet(buf: bytes):
