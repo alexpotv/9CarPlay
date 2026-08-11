@@ -292,11 +292,35 @@ def build_packet(lingo: int, cmd: int, payload: bytes = b"") -> bytes:
 
 def _parse_at(buf: bytes, header_len: int):
     """Tries to parse a packet whose sync bytes (header_len of them, already matched at buf[0]) are
-    followed by <LEN><payload...><checksum>. Returns None if more data is needed, "bad_checksum" if
-    a full candidate was available but didn't check out, or (lingo, cmd, payload, total_len)."""
+    followed by either the small format <LEN><payload...><checksum> or the large format
+    <0x00><LENhi><LENlo><payload...><checksum>. Returns None if more data is needed, "bad_checksum"
+    if a full candidate was available but didn't check out, or (lingo, cmd, payload, total_len).
+
+    Large-packet format: a LEN byte of 0x00 signals that the real length is the next two bytes,
+    big-endian. The head unit uses this for any payload > 255 bytes — most importantly the
+    ~498-byte RetDevAuthenticationInfo MFi certificate (cmd 0x15), confirmed on the wire and
+    checksum-verified 2026-08-11. In both formats the checksum is the 2's-complement of the sum of
+    the length field(s) + lingo + cmd + payload (i.e. everything between the sync bytes and the
+    checksum itself)."""
     if len(buf) < header_len + 1:
         return None
     length = buf[header_len]
+    if length == 0x00:
+        # Large packet: 2-byte big-endian length follows the 0x00 marker.
+        if len(buf) < header_len + 3:
+            return None
+        big_len = (buf[header_len + 1] << 8) | buf[header_len + 2]
+        total_len = header_len + 3 + big_len + 1
+        if len(buf) < total_len:
+            return None
+        body = buf[header_len + 1:header_len + 3 + big_len]  # LENhi,LENlo,lingo,cmd,payload
+        checksum = buf[header_len + 3 + big_len]
+        if iap1_checksum(body) != checksum:
+            return "bad_checksum"
+        lingo = buf[header_len + 3]
+        cmd = buf[header_len + 4]
+        payload = bytes(buf[header_len + 5:header_len + 3 + big_len])
+        return lingo, cmd, payload, total_len
     total_len = header_len + 1 + length + 1
     if len(buf) < total_len:
         return None

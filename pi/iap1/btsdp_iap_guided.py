@@ -157,51 +157,63 @@ class Hypothesis:
         self.force_idps_success = force_idps_success
 
 
-# Round 3 holds the settled base + transID echo constant (all rows reach the FID-token exchange) and
-# attacks the post-token ~18s -> EndIDPS(fail) wall. Success signals, in order of strength: the head
-# unit answers our GetDevAuthenticationInfo with RetDevAuthenticationInfo (0x15, its MFi cert) / a
-# GetIPodInfo request (RequestiPodName 0x07 etc.) / OpenDataSessionForProtocol (0x3f) appears; the
-# post-token ~18s gap collapses; EndIDPS returns accEndIDPSStatus=0x00; the whole IDPS stops looping.
+# ---------------------------------------------------------------------------------------------
+# ROUND 3 RESULTS (runs 20260811_1253-1258, T1-T5) — the real breakthrough, hidden in the
+# "unclassified" bytes. Sending GetDevAuthenticationInfo (0x14) after the FID tokens (T2/T3) did
+# nothing on its own. But T5 (0x14 after tokens + force IDPSStatus=0x00) made the head unit send a
+# ~498-byte blob our parser logged as garbage: reconstructed + checksum-verified, it is a LARGE
+# packet (0x55 0x00 <len16> ...) carrying cmd 0x15 RetDevAuthenticationInfo with the head unit's
+# real Apple MFi certificate chain ("Apple iPod Accessories Certification Authority", DER 3082...).
+# So authentication ALREADY WORKS — the accessory proves itself to us — but the small-packet-only
+# parser couldn't read the cert, so we never continued the handshake and IDPS looped. Two fixes
+# landed from this: (1) iap1_daemon.try_parse_packet now parses the large-packet format; (2) the
+# 0x15 handler here strips the 2-byte transID prefix and drives the sectioned cert -> signature ->
+# status flow. Forcing IDPSStatus=0x00 was what made the head unit release the cert (T2 without it
+# got no 0x15), so the winning combo is: auth after FID tokens + force IDPS success.
+# ---------------------------------------------------------------------------------------------
+
+
+# Round 4 puts the large-packet fix to work: complete the MFi authentication the head unit was
+# already offering, then watch what unlocks next. Success signals, strongest first: we receive
+# RetDevAuthenticationSignature (0x18) and ACK it (0x19) without error; the IDPS loop STOPS; a brand
+# new command class appears — iPod-preferences / SystemInit (RetiPodPreferences), GetIPodInfo
+# (RequestiPodName 0x07 etc.), or OpenDataSessionForProtocol (0x3f) — i.e. the head unit moves past
+# identification toward launching the app. Any of those is uncharted territory past every prior wall.
 HYPOTHESES = [
     Hypothesis(
-        "T1", "Control: transID echo, no auth during IDPS (reproduce round-2 wall)",
-        "Round-2 R2 exactly. Confirms IDPS still reaches SetFIDTokenValues then stalls ~18s and "
-        "EndIDPS=0x01 before we change the auth timing — the control for this round.",
-        "0x39 (SetFIDTokenValues) arrives, then ~18s gap, then EndIDPS accEndIDPSStatus=0x01, looping.",
-        auth_trigger="after_endidps"),
+        "U1", "Complete MFi auth: 0x14 after FID tokens + force IDPS success (T5 config + parser fix)",
+        "The winning round-3 combo, now that we can actually read the cert. We send "
+        "GetDevAuthenticationInfo after the FID tokens and assert IDPSStatus=0x00; the head unit "
+        "sends its cert (0x15, large packet); we ACK sections, request its signature (0x17); it "
+        "signs (0x18); we ACK status (0x19). This should finish authentication for the first time.",
+        "0x18 (signature) received + 0x19 sent with no loop restart; then a NEW command class "
+        "(RetiPodPreferences / GetIPodInfo 0x07 / OpenDataSession 0x3f) appears.",
+        auth_trigger="after_fidtokens", force_idps_success=True),
 
     Hypothesis(
-        "T2", "Initiate MFi auth right after ACKing the FID tokens",
-        "THE primary lead. After sending our RetFIDTokenValueACKs (0x3a) we immediately send "
-        "GetDevAuthenticationInfo (0x14), filling the ~18s window the head unit waits before EndIDPS. "
-        "If the head unit is waiting for the iPod to start authenticating the accessory, this should "
-        "get a response and let IDPS finalize successfully.",
-        "Head unit replies RetDevAuthenticationInfo (0x15) with its cert; the ~18s gap collapses; "
-        "EndIDPS returns 0x00; IDPS stops looping.",
-        auth_trigger="after_fidtokens"),
+        "U2", "Complete MFi auth WITHOUT forcing IDPS success",
+        "Same as U1 but reply to EndIDPS per spec (0x04 on the head unit's 0x01). Tests whether, now "
+        "that we handle the cert, auth proceeds on its own — or whether force-IDPS-success is still "
+        "required to make the head unit release the certificate.",
+        "If the cert (0x15) still arrives and auth completes, force-success wasn't essential; if no "
+        "0x15 appears, it was.",
+        auth_trigger="after_fidtokens", force_idps_success=False),
 
     Hypothesis(
-        "T3", "Auth after FID tokens + ACK 0x11 (stacked)",
-        "T2 plus answering 0x11 with ACK success, in case both the auth timing and a clean 0x11 "
-        "answer are needed together for the head unit to consider identification complete.",
-        "Same success signals as T2; isolates whether 0x11 matters once auth timing is fixed.",
-        auth_trigger="after_fidtokens", opt11_mode="ack_success"),
-
-    Hypothesis(
-        "T4", "Force IDPSStatus=0x00 on EndIDPS + then initiate auth",
-        "Ignores the head unit's accEndIDPSStatus=0x01 and replies IDPSStatus=0x00 (assert success), "
-        "then initiates auth on that (spec-invalid, but tests whether asserting success breaks the "
-        "retry loop and moves it to authentication/app-launch).",
-        "The IDPS loop stops after one cycle; a new command class (auth 0x14+/GetIPodInfo/0x3f) "
-        "appears instead of another StartIDPS.",
+        "U3", "Force IDPS success first, THEN initiate auth (cleaner ordering)",
+        "Assert IDPSStatus=0x00 on EndIDPS and only then send GetDevAuthenticationInfo — the more "
+        "spec-plausible order (identify, close IDPS, then authenticate). Compare against U1 in case "
+        "the head unit prefers auth to start after IDPS is closed rather than mid-window.",
+        "Same completion signals as U1; tells us the head unit's preferred auth-start ordering.",
         auth_trigger="after_endidps", force_idps_success=True),
 
     Hypothesis(
-        "T5", "Auth after FID tokens + force IDPSStatus=0x00 (everything stacked)",
-        "Combines T2 and T4: authenticate inside the pre-EndIDPS window AND assert IDPS success when "
-        "EndIDPS arrives. Last-resort 'push through' if neither alone advances past the wall.",
-        "IDPS stops looping and the head unit moves toward GetIPodInfo / auth / app launch.",
-        auth_trigger="after_fidtokens", opt11_mode="ack_success", force_idps_success=True),
+        "U4", "U1 + ACK 0x11 + claim every queried lingo (kitchen sink)",
+        "U1 with the extra identification niceties stacked on, as a fallback if U1 completes auth but "
+        "stalls at the next step for an identification-completeness reason.",
+        "Auth completes AND the head unit advances further than U1 did.",
+        auth_trigger="after_fidtokens", force_idps_success=True, opt11_mode="ack_success",
+        other_lingo_options=GENERAL_APP_BIT),
 ]
 
 
@@ -293,14 +305,21 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
             out.append(iap.build_get_dev_authentication_info())
         return out
 
-    # ---- MFi device authentication (accessory proves itself to us; we accept unconditionally) ----
+    # ---- MFi device authentication (accessory proves itself to us; we accept unconditionally).
+    # The head unit's RetDevAuthenticationInfo (0x15) arrives as a LARGE packet (~498 B MFi cert)
+    # with a 2-byte transID prefix ahead of the standard [major, minor, curSection, maxSection,
+    # certData] body — strip it. The cert is split across sections: ACK every non-final section with
+    # a plain ACK to pull the next, then AckDevAuthenticationInfo(0x16) + GetDevAuthenticationSignature
+    # (0x17) on the final one. (Confirmed on the wire 2026-08-11; see references/cr-v/iap.md.) ----
     if hyp.init_auth and cmd == iap.CMD_RET_DEV_AUTHENTICATION_INFO:
-        major = payload[0] if payload else 1
-        if major == 0x02:
-            cur_section, max_section = payload[2], payload[3]
+        body = payload[2:] if (len(payload) >= 6 and payload[0] == 0 and payload[1] == 0
+                               and payload[2] in (0x01, 0x02)) else payload
+        major = body[0] if body else 1
+        if major == 0x02 and len(body) >= 4:
+            cur_section, max_section = body[2], body[3]
             if cur_section < max_section:
                 out.append(iap.build_ack(0x00, iap.CMD_RET_DEV_AUTHENTICATION_INFO))
-                return out
+                return out   # request the next cert section before proceeding
         out.append(iap.build_ack_dev_authentication_info(0x00))
         challenge_len = 20 if major == 0x02 else 16
         out.append(iap.build_get_dev_authentication_signature(os.urandom(challenge_len), 1))
