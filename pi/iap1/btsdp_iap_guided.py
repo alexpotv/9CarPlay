@@ -58,6 +58,15 @@ from gi.repository import GLib
 import iap1_daemon as iap
 from markers import session_suffix
 
+# AppMode DataParts codec (pi/appmode/appmode_proto.py) — used to decode any bytes seen on the AV/data
+# SPP channels. Optional: if the module isn't importable the harness still runs (just no decode).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "appmode"))
+try:
+    import appmode_proto as appmode
+except Exception as _e:  # pragma: no cover
+    appmode = None
+    print(f"[btsdp-guided] appmode_proto not available ({_e}); AV bytes logged raw only")
+
 # ---------------------------------------------------------------------------
 # Bluetooth profile constants (identical to btsdp_iap.py — same UUID/channel).
 # ---------------------------------------------------------------------------
@@ -77,6 +86,18 @@ AV_DATA_UUIDS = [
     ("av1", "fa592c6e-5e85-410e-8a7e-5d6373117d39", 3),
     ("av2", "453994d5-d58b-96f9-6616-b37f586ba2ec", 4),
 ]
+
+# CHANGE 2 (2026-08-11): the head unit ALSO hosts av1/av2 as RFCOMM servers (seen in the
+# references/guided/btmon/av_capture: av1 on ch5, av2 on ch6). In the appmode/1 capture the head unit
+# searched OUR av1/av2 records post-auth but never opened a data connection, so no DataParts flowed.
+# To cover the "phone connects to the head unit" direction, after iAP reaches Extended Interface we
+# dial OUT to the head unit's av1/av2 channels ourselves (a controlled connect, not BlueZ AutoConnect
+# which fired too early during the pairing sweep and got DISC'd). Whichever direction is correct, one
+# path now establishes the channel; we decode whatever arrives as DataParts (appmode_proto).
+HEAD_UNIT_AV_CHANNELS = {"av1": 5, "av2": 6}   # RFCOMM server channels the head unit hosts
+CONNECT_AV_ON_EI = True                         # auto-dial the head unit's AV channels once EI starts
+AV_CONNECT_DELAY_S = 1.5                         # let the head unit settle into EI before dialing
+_BTPROTO_RFCOMM = getattr(socket, "BTPROTO_RFCOMM", 3)
 
 
 # ===========================================================================
@@ -332,6 +353,8 @@ class Harness:
         # per-window live counters, surfaced back to the operator so they can see progress
         self.rx_counts = {}              # cmd -> count within the current window
         self.connected = False
+        self.head_unit_bdaddr = None     # learned from the inbound iAP connection (device path)
+        self.av_out_started = False      # guards the one-shot outbound AV connect (CHANGE 2)
 
     # ---- logging (thread-safe) ----
     def log(self, direction, **fields):
@@ -381,6 +404,10 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
     production daemon; only the *policy* (which of them to send, and when) varies per hypothesis."""
     out = []
     if lingo == iap.LINGO_EXTENDED_INTERFACE:
+        # CHANGE 2: EI mode means iAP auth is done and AppMode is Active — the moment the head unit
+        # expects the AV/data channel. Dial its av1/av2 channels once, shortly after EI starts.
+        if CONNECT_AV_ON_EI and not harness.av_out_started:
+            threading.Timer(AV_CONNECT_DELAY_S, connect_head_unit_av, args=(harness,)).start()
         # Post-auth, the head unit enters Extended Interface mode (via General 0x05) and drives the
         # iPod-Out UI/DB setup with 2-byte EI commands (cmd is a 16-bit int here; iap1_daemon parses
         # the width). We don't yet know each EI command's reply, so autoack answers with an EI ACK
@@ -525,7 +552,9 @@ def rfcomm_session(harness, fd, device):
     sock = socket.fromfd(fd, socket.AF_BLUETOOTH, socket.SOCK_STREAM)
     sock.setblocking(True)
     harness.connected = True
-    harness.log("note", event="rfcomm_connected", device=str(device))
+    harness.head_unit_bdaddr = _bdaddr_from_device_path(device)
+    harness.log("note", event="rfcomm_connected", device=str(device),
+                bdaddr=harness.head_unit_bdaddr)
     print(f"\n[conn] RFCOMM connected from {device} (hypothesis {harness.current.key} armed)")
     rx_buf = bytearray()
     conn_t0 = time.time()   # per-connection clock, so the operator can watch step latency live
@@ -719,6 +748,74 @@ class GuidedProfile(dbus.service.Object):
         print(f"[btsdp-guided] RequestDisconnection from {device}")
 
 
+def _bdaddr_from_device_path(device):
+    """'/org/bluez/hci0/dev_FC_62_B9_20_52_99' -> 'FC:62:B9:20:52:99' (None if unparseable)."""
+    tail = str(device).rsplit("dev_", 1)[-1]
+    mac = tail.replace("_", ":")
+    return mac if len(mac) == 17 and mac.count(":") == 5 else None
+
+
+def _log_dataparts(harness, tag, direction, chunk):
+    """Decode any AppMode DataParts frames in a chunk and log/print them (no-op if appmode absent)."""
+    if appmode is None:
+        return
+    try:
+        frames = list(appmode.parse_frames(chunk))
+    except Exception:
+        return
+    for f in frames:
+        harness.log("note", event="dataparts", channel=tag, dir=direction,
+                    pack_id=f.pack_id, name=f.name, check=f.check, check_ok=f.check_ok,
+                    payload=f.payload.hex())
+        print(f"  [dataparts {tag} {direction}] {f.describe()}")
+
+
+def _av_out_session(harness, bdaddr, tag, channel):
+    """Dial OUT to the head unit's AV/data SPP (RFCOMM server channel) and log/decode what it sends."""
+    try:
+        sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, _BTPROTO_RFCOMM)
+        sock.settimeout(10.0)
+        sock.connect((bdaddr, channel))
+        sock.settimeout(None)
+    except OSError as e:
+        harness.log("note", event="av_out_connect_failed", channel=tag, chan=channel, error=str(e))
+        print(f"[av-out {tag}] connect to {bdaddr} ch{channel} FAILED: {e}")
+        return
+    harness.log("note", event="av_out_connected", channel=tag, chan=channel, bdaddr=bdaddr)
+    print(f"\n[av-out {tag}] *** CONNECTED to head unit {bdaddr} ch{channel} — dialed AV channel! ***")
+    try:
+        while True:
+            try:
+                chunk = sock.recv(4096)
+            except OSError as e:
+                harness.log("note", event="av_out_recv_error", channel=tag, error=str(e))
+                break
+            if not chunk:
+                break
+            harness.log("rx", note="av_out", channel=tag, raw=chunk.hex())
+            print(f"  [av-out {tag} rx] {len(chunk)} bytes: {chunk.hex()[:100]}")
+            _log_dataparts(harness, tag, "rx", chunk)
+    finally:
+        harness.log("note", event="av_out_closed", channel=tag)
+        print(f"[av-out {tag}] closed")
+        sock.close()
+
+
+def connect_head_unit_av(harness):
+    """One-shot: dial the head unit's av1/av2 channels (CHANGE 2). Safe to call repeatedly."""
+    with harness.lock:
+        if harness.av_out_started:
+            return
+        bd = harness.head_unit_bdaddr
+        if not bd:
+            print("[av-out] no head-unit bdaddr known yet — skipping outbound AV connect")
+            return
+        harness.av_out_started = True
+    print(f"[av-out] dialing head unit {bd} AV channels {dict(HEAD_UNIT_AV_CHANNELS)} ...")
+    for tag, ch in HEAD_UNIT_AV_CHANNELS.items():
+        threading.Thread(target=_av_out_session, args=(harness, bd, tag, ch), daemon=True).start()
+
+
 def data_channel_session(harness, tag, fd, device):
     """Accept the head unit's AV/data SPP connection and log everything it sends. We don't yet know
     this channel's protocol — the point is (1) accepting it clears the 'cannot connect via Bluetooth'
@@ -738,6 +835,7 @@ def data_channel_session(harness, tag, fd, device):
                 break
             harness.log("rx", note="datachan", channel=tag, raw=chunk.hex())
             print(f"  [datachan {tag} rx] {len(chunk)} bytes: {chunk.hex()[:100]}")
+            _log_dataparts(harness, tag, "rx", chunk)
     finally:
         harness.log("note", event="datachan_closed", channel=tag, device=str(device))
         print(f"[datachan {tag}] closed")
@@ -811,7 +909,11 @@ def main():
             "Name": f"9CarPlay AV data ({tag})",
             "RequireAuthentication": dbus.Boolean(False),
             "RequireAuthorization": dbus.Boolean(False),
-            "AutoConnect": dbus.Boolean(True),
+            # AutoConnect=False (CHANGE 2): keep HOSTING av1/av2 (accept an inbound connect from the
+            # head unit) but do NOT let BlueZ auto-dial at discovery — that fired during the pairing
+            # sweep and the head unit DISC'd it (references/guided/btmon/av_capture). The controlled
+            # outbound dial now happens post-EI via connect_head_unit_av().
+            "AutoConnect": dbus.Boolean(False),
             "Channel": dbus.UInt16(chan),
         })
         print(f"[btsdp-guided] Registered AV/data profile {tag} (UUID={uuid_str}, channel={chan})")
