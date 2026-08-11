@@ -111,16 +111,22 @@ RFCOMM_CHANNEL = 2
 GENERAL_APP_BIT = 1 << 0x0D   # 0x2000 — "communication with iPhone OS 3.x applications"
 
 # ---------------------------------------------------------------------------------------------
-# ROUND 1 TIMING (run 20260811_113447) — the dominant round-2 lead. OUR side replied instantly
-# (every TX shares its RX's timestamp), but the head unit stalled ~18s between consecutive
-# GetiPodOptionsForLingo (0x4b) queries — ~3x its ~6s StartIDPS retry unit — i.e. it timed out
-# waiting for a reply to each option query it never accepted, then moved to the next lingo. Six
-# queried lingoes x ~18s ≈ 100s of pure stall, which blows the head unit's app-launch deadline
-# (Communication.exe: ALApp_LaunchLimitTimer / ALApp_WaitAppStartTimer) -> "Loading..." flips to
-# "Cannot launch app" while traffic is still flowing. So the deadline is the SYMPTOM; the root
-# cause is that our 0x4c option replies aren't accepted. Prime suspect: the 0x4b request carries a
-# 2-byte transID prefix ([transIdHi, transIdLo, lingoId]) but our 0x4c reply doesn't echo it, so it
-# never correlates. `echo_transid` puts that transID back on the front of the 0x4c reply.
+# ROUND 2 RESULTS (runs 20260811_1229-1232, R1-R5) — the transID echo was the unlock, and it moved
+# the wall exactly one step. With echo_transid the ~18s option stalls VANISHED (0x4b queries now
+# resolve <0.1s apart) and the head unit proceeded to send its own SetFIDTokenValues (0x39) — the
+# FID-token step that never appeared before. Its tokens even include the EA protocol strings
+# (jp.co.honda.rd.dispaudio.app.hondalink, com.pandora.link.v1). R3/R5 (0x11 ACK, extra lingo
+# options) behaved identically to R2 and R4 (speculative 0x12) no better — so the 0x11 answer and
+# option bits DON'T matter; only the transID echo did.
+#
+# THE NEW WALL: after we ACK the FID tokens (0x3a, which correctly echoes the transID), the head
+# unit goes silent for ~18s (again 3x its 6s retry unit) and then sends EndIDPS with
+# accEndIDPSStatus=0x01 (still FAIL) — transID 0x0009, i.e. the very next counter value with nothing
+# between. So it sends its tokens, starts an ~18s timer waiting for the iPod to act, and finalizes
+# with fail when nothing comes. The most likely missing iPod action is INITIATING MFi device
+# authentication (GetDevAuthenticationInfo) right after the token exchange — which our code never
+# did, because it only initiated auth after EndIDPS returned status 0x00 (a state we never reach).
+# Round 3 breaks that chicken-and-egg with `auth_trigger`, plus a `force_idps_success` escape hatch.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -128,7 +134,7 @@ class Hypothesis:
     def __init__(self, key, title, rationale, positive_signal,
                  start_idps="accept", sync="short", run_idps_body=True, init_auth=True,
                  opt11_mode="unknown_id", general_options=GENERAL_APP_BIT, other_lingo_options=0,
-                 echo_transid=False):
+                 echo_transid=True, auth_trigger="after_endidps", force_idps_success=False):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -141,56 +147,61 @@ class Hypothesis:
         self.general_options = general_options
         self.other_lingo_options = other_lingo_options
         self.echo_transid = echo_transid
+        # auth_trigger: when to send GetDevAuthenticationInfo (0x14) to authenticate the accessory.
+        #   "after_endidps"   -> only after EndIDPS resolves to success (round-2 behavior; never fired)
+        #   "after_fidtokens" -> immediately after ACKing SetFIDTokenValues (0x39), i.e. inside the
+        #                        ~18s window the head unit waits before EndIDPS
+        self.auth_trigger = auth_trigger
+        # force_idps_success: reply to EndIDPS with IDPSStatus=0x00 even when the head unit sent
+        # accEndIDPSStatus=0x01. Spec-invalid, but tests whether asserting success pushes it forward.
+        self.force_idps_success = force_idps_success
 
 
-# Round-2 keeps the settled base (accept StartIDPS, short sync, run IDPS body) constant so every row
-# reaches the options step, and hunts the ~18s-per-step timeout. THE ORACLE IS NOW TIMING as much as
-# content: if a change is right, the ~18s gaps between 0x4b queries collapse to well under a second
-# (like the head unit's own fast initial packets), IDPS completes, and EndIDPS comes back
-# accEndIDPSStatus=0x00 / a new command class appears (0x39, a GetIPodInfo request, auth 0x14+).
-# The console prints each RX's seconds-since-connect so this is visible live.
+# Round 3 holds the settled base + transID echo constant (all rows reach the FID-token exchange) and
+# attacks the post-token ~18s -> EndIDPS(fail) wall. Success signals, in order of strength: the head
+# unit answers our GetDevAuthenticationInfo with RetDevAuthenticationInfo (0x15, its MFi cert) / a
+# GetIPodInfo request (RequestiPodName 0x07 etc.) / OpenDataSessionForProtocol (0x3f) appears; the
+# post-token ~18s gap collapses; EndIDPS returns accEndIDPSStatus=0x00; the whole IDPS stops looping.
 HYPOTHESES = [
     Hypothesis(
-        "R1", "Control: reproduce the round-1 ~18s-stall / IDPS-options failure",
-        "Exactly the round-1 baseline (0x4c reply without transID echo, 0x11 -> unknown_id, General "
-        "options 0x2000). Confirms the ~18s inter-query stalls and EndIDPS=0x01 still reproduce "
-        "before changing anything, as a control on the same session.",
-        "~18s gaps between 0x4b queries; EndIDPS accEndIDPSStatus=0x01 — same as round 1.",
-        echo_transid=False, opt11_mode="unknown_id", general_options=GENERAL_APP_BIT),
+        "T1", "Control: transID echo, no auth during IDPS (reproduce round-2 wall)",
+        "Round-2 R2 exactly. Confirms IDPS still reaches SetFIDTokenValues then stalls ~18s and "
+        "EndIDPS=0x01 before we change the auth timing — the control for this round.",
+        "0x39 (SetFIDTokenValues) arrives, then ~18s gap, then EndIDPS accEndIDPSStatus=0x01, looping.",
+        auth_trigger="after_endidps"),
 
     Hypothesis(
-        "R2", "Echo the 2-byte transID in the 0x4c GetiPodOptionsForLingo reply",
-        "THE primary lead. The head unit prefixes a transID on its 0x4b query but our reply omits "
-        "it, so it likely can't correlate the response and times out ~18s each time. Echoing the "
-        "transID back should make each query resolve instantly and let IDPS finish inside the "
-        "launch deadline.",
-        "The ~18s gaps vanish (queries now <1s apart) AND EndIDPS flips to accEndIDPSStatus=0x00 / "
-        "the head unit proceeds past IDPS.",
-        echo_transid=True, opt11_mode="unknown_id", general_options=GENERAL_APP_BIT),
+        "T2", "Initiate MFi auth right after ACKing the FID tokens",
+        "THE primary lead. After sending our RetFIDTokenValueACKs (0x3a) we immediately send "
+        "GetDevAuthenticationInfo (0x14), filling the ~18s window the head unit waits before EndIDPS. "
+        "If the head unit is waiting for the iPod to start authenticating the accessory, this should "
+        "get a response and let IDPS finalize successfully.",
+        "Head unit replies RetDevAuthenticationInfo (0x15) with its cert; the ~18s gap collapses; "
+        "EndIDPS returns 0x00; IDPS stops looping.",
+        auth_trigger="after_fidtokens"),
 
     Hypothesis(
-        "R3", "transID echo + answer cmd 0x11 with ACK success",
-        "If R2 speeds things up but IDPS still doesn't complete, add the next-likeliest fix: stop "
-        "telling the head unit 'unknown id' for its iPod-options request (0x11) and ACK it success.",
-        "IDPS completes (EndIDPS=0x00 / new command class) on top of R2's timing fix.",
-        echo_transid=True, opt11_mode="ack_success", general_options=GENERAL_APP_BIT),
+        "T3", "Auth after FID tokens + ACK 0x11 (stacked)",
+        "T2 plus answering 0x11 with ACK success, in case both the auth timing and a clean 0x11 "
+        "answer are needed together for the head unit to consider identification complete.",
+        "Same success signals as T2; isolates whether 0x11 matters once auth timing is fixed.",
+        auth_trigger="after_fidtokens", opt11_mode="ack_success"),
 
     Hypothesis(
-        "R4", "transID echo + RetiPodOptions data reply to 0x11 (cmd 0x12, SPECULATIVE)",
-        "Like R3 but answers 0x11 with a real options reply (cmd 0x12, guessed pairing, echoing "
-        "transID + options) instead of an ACK — the firmware receives a 'RetiPodOutOption', hinting "
-        "0x11 wants data, not an ACK. Command id/shape are a guess; compare against R3.",
-        "IDPS completes where R3 didn't — implicating 0x11 wanting a data reply.",
-        echo_transid=True, opt11_mode="ret_options", general_options=GENERAL_APP_BIT),
+        "T4", "Force IDPSStatus=0x00 on EndIDPS + then initiate auth",
+        "Ignores the head unit's accEndIDPSStatus=0x01 and replies IDPSStatus=0x00 (assert success), "
+        "then initiates auth on that (spec-invalid, but tests whether asserting success breaks the "
+        "retry loop and moves it to authentication/app-launch).",
+        "The IDPS loop stops after one cycle; a new command class (auth 0x14+/GetIPodInfo/0x3f) "
+        "appears instead of another StartIDPS.",
+        auth_trigger="after_endidps", force_idps_success=True),
 
     Hypothesis(
-        "R5", "transID echo + 0x11 ACK + claim every queried lingo",
-        "Stacks the remaining plausible fixes on top of the timing fix: ACK 0x11 and report a "
-        "non-zero option set for the non-General lingoes the head unit specifically asks about "
-        "(0x02/0x03/0x04/0x0c/0x0e), in case it requires the iPod to claim support for them.",
-        "IDPS completes — then peel back which piece mattered.",
-        echo_transid=True, opt11_mode="ack_success", general_options=GENERAL_APP_BIT,
-        other_lingo_options=GENERAL_APP_BIT),
+        "T5", "Auth after FID tokens + force IDPSStatus=0x00 (everything stacked)",
+        "Combines T2 and T4: authenticate inside the pre-EndIDPS window AND assert IDPS success when "
+        "EndIDPS arrives. Last-resort 'push through' if neither alone advances past the wall.",
+        "IDPS stops looping and the head unit moves toward GetIPodInfo / auth / app launch.",
+        auth_trigger="after_fidtokens", opt11_mode="ack_success", force_idps_success=True),
 ]
 
 
@@ -266,13 +277,19 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
     if hyp.run_idps_body and cmd == iap.CMD_SET_FID_TOKEN_VALUES:
         trans_id, fields = iap.parse_fid_token_values(payload)
         out.append(iap.build_ret_fid_token_value_acks(trans_id, fields))
+        # Round 3: the head unit goes silent ~18s after this ACK before finalizing IDPS with a
+        # failure. If it's waiting for the iPod to start authenticating the accessory, initiate that
+        # now (inside the window) rather than waiting for an EndIDPS success that never comes.
+        if hyp.auth_trigger == "after_fidtokens" and hyp.init_auth:
+            out.append(iap.build_get_dev_authentication_info())
         return out
 
     if hyp.run_idps_body and cmd == iap.CMD_END_IDPS:
         trans_id = (payload[0] << 8) | payload[1]
         acc_status = payload[2] if len(payload) > 2 else 0
-        out.append(iap.build_idps_status(trans_id, 0x00 if acc_status == 0 else 0x04))
-        if acc_status == 0 and hyp.init_auth:
+        succeed = (acc_status == 0) or hyp.force_idps_success
+        out.append(iap.build_idps_status(trans_id, 0x00 if succeed else 0x04))
+        if succeed and hyp.init_auth and hyp.auth_trigger == "after_endidps":
             out.append(iap.build_get_dev_authentication_info())
         return out
 
@@ -437,6 +454,8 @@ def operator_console(harness):
               f"idps_body={hyp.run_idps_body}  init_auth={hyp.init_auth}")
         print(f"                  echo_transid={hyp.echo_transid}  cmd0x11={hyp.opt11_mode}  "
               f"general_opts=0x{hyp.general_options:x}  other_lingo_opts=0x{hyp.other_lingo_options:x}")
+        print(f"                  auth_trigger={hyp.auth_trigger}  "
+              f"force_idps_success={hyp.force_idps_success}")
         cmd = _ask("\n  Press Enter to ARM this hypothesis (or s/r/q): ").lower()
         if cmd == "q":
             break
@@ -451,7 +470,8 @@ def operator_console(harness):
                     start_idps=hyp.start_idps, sync=hyp.sync,
                     run_idps_body=hyp.run_idps_body, init_auth=hyp.init_auth,
                     opt11_mode=hyp.opt11_mode, general_options=hyp.general_options,
-                    other_lingo_options=hyp.other_lingo_options, echo_transid=hyp.echo_transid)
+                    other_lingo_options=hyp.other_lingo_options, echo_transid=hyp.echo_transid,
+                    auth_trigger=hyp.auth_trigger, force_idps_success=hyp.force_idps_success)
         print(f"\n  >>> ARMED ({hyp.key}). Now LAUNCH HondaLink on the head unit and watch it.")
         print("      (If it's already open, back out and re-enter the HondaLink source to force a")
         print("       fresh connection.) Live rx/tx traffic prints below as it happens.")
