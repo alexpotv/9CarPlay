@@ -110,11 +110,25 @@ RFCOMM_CHANNEL = 2
 
 GENERAL_APP_BIT = 1 << 0x0D   # 0x2000 — "communication with iPhone OS 3.x applications"
 
+# ---------------------------------------------------------------------------------------------
+# ROUND 1 TIMING (run 20260811_113447) — the dominant round-2 lead. OUR side replied instantly
+# (every TX shares its RX's timestamp), but the head unit stalled ~18s between consecutive
+# GetiPodOptionsForLingo (0x4b) queries — ~3x its ~6s StartIDPS retry unit — i.e. it timed out
+# waiting for a reply to each option query it never accepted, then moved to the next lingo. Six
+# queried lingoes x ~18s ≈ 100s of pure stall, which blows the head unit's app-launch deadline
+# (Communication.exe: ALApp_LaunchLimitTimer / ALApp_WaitAppStartTimer) -> "Loading..." flips to
+# "Cannot launch app" while traffic is still flowing. So the deadline is the SYMPTOM; the root
+# cause is that our 0x4c option replies aren't accepted. Prime suspect: the 0x4b request carries a
+# 2-byte transID prefix ([transIdHi, transIdLo, lingoId]) but our 0x4c reply doesn't echo it, so it
+# never correlates. `echo_transid` puts that transID back on the front of the 0x4c reply.
+# ---------------------------------------------------------------------------------------------
+
 
 class Hypothesis:
     def __init__(self, key, title, rationale, positive_signal,
                  start_idps="accept", sync="short", run_idps_body=True, init_auth=True,
-                 opt11_mode="unknown_id", general_options=GENERAL_APP_BIT, other_lingo_options=0):
+                 opt11_mode="unknown_id", general_options=GENERAL_APP_BIT, other_lingo_options=0,
+                 echo_transid=False):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -126,57 +140,57 @@ class Hypothesis:
         self.opt11_mode = opt11_mode
         self.general_options = general_options
         self.other_lingo_options = other_lingo_options
+        self.echo_transid = echo_transid
 
 
-# Every round-2 hypothesis keeps the settled base (accept StartIDPS, short sync, run IDPS body) so
-# it reaches the options-negotiation step, and varies exactly one thing about how we answer it. The
-# oracle for all of them is the same single observation: does EndIDPS come back with
-# accEndIDPSStatus=0x00 (success — IDPS accepted) instead of 0x01, and/or does a NEW command class
-# appear afterward (SetFIDTokenValues 0x39, a GetIPodInfo request like RequestiPodName 0x07, or an
-# auth command 0x14+)? Any of those = we got past the wall.
+# Round-2 keeps the settled base (accept StartIDPS, short sync, run IDPS body) constant so every row
+# reaches the options step, and hunts the ~18s-per-step timeout. THE ORACLE IS NOW TIMING as much as
+# content: if a change is right, the ~18s gaps between 0x4b queries collapse to well under a second
+# (like the head unit's own fast initial packets), IDPS completes, and EndIDPS comes back
+# accEndIDPSStatus=0x00 / a new command class appears (0x39, a GetIPodInfo request, auth 0x14+).
+# The console prints each RX's seconds-since-connect so this is visible live.
 HYPOTHESES = [
     Hypothesis(
-        "R1", "Control: reproduce the round-1 IDPS-options failure",
-        "Exactly the round-1 baseline (0x11 -> unknown_id, General options 0x2000). Confirms the "
-        "EndIDPS accEndIDPSStatus=0x01 failure still reproduces before we change anything, so the "
-        "other rows are measured against a known-bad control on the same session.",
-        "EndIDPS arrives with accEndIDPSStatus=0x01 (fail) — same as round 1.",
-        opt11_mode="unknown_id", general_options=GENERAL_APP_BIT),
+        "R1", "Control: reproduce the round-1 ~18s-stall / IDPS-options failure",
+        "Exactly the round-1 baseline (0x4c reply without transID echo, 0x11 -> unknown_id, General "
+        "options 0x2000). Confirms the ~18s inter-query stalls and EndIDPS=0x01 still reproduce "
+        "before changing anything, as a control on the same session.",
+        "~18s gaps between 0x4b queries; EndIDPS accEndIDPSStatus=0x01 — same as round 1.",
+        echo_transid=False, opt11_mode="unknown_id", general_options=GENERAL_APP_BIT),
 
     Hypothesis(
-        "R2", "Answer cmd 0x11 with ACK success (0x00) instead of 'unknown id'",
-        "Cheapest fix for the likeliest culprit. In round 1 we told the head unit 'unknown id' for "
-        "its iPod-options request (0x11); a plain success ACK may be enough for it to stop treating "
-        "the iPod as non-conformant and accept IDPS.",
-        "EndIDPS flips to accEndIDPSStatus=0x00, or the head unit proceeds past IDPS.",
-        opt11_mode="ack_success", general_options=GENERAL_APP_BIT),
+        "R2", "Echo the 2-byte transID in the 0x4c GetiPodOptionsForLingo reply",
+        "THE primary lead. The head unit prefixes a transID on its 0x4b query but our reply omits "
+        "it, so it likely can't correlate the response and times out ~18s each time. Echoing the "
+        "transID back should make each query resolve instantly and let IDPS finish inside the "
+        "launch deadline.",
+        "The ~18s gaps vanish (queries now <1s apart) AND EndIDPS flips to accEndIDPSStatus=0x00 / "
+        "the head unit proceeds past IDPS.",
+        echo_transid=True, opt11_mode="unknown_id", general_options=GENERAL_APP_BIT),
 
     Hypothesis(
-        "R3", "Answer cmd 0x11 with a RetiPodOptions reply (cmd 0x12, SPECULATIVE)",
-        "The firmware receives a 'RetiPodOutOption' from the iPod, implying 0x11 wants a real "
-        "options *reply*, not an ACK. This sends cmd 0x12 (guessed Get/Ret pairing) echoing the "
-        "transID + General options. Command id/payload are a guess — a malformed reply may itself "
-        "be rejected, so compare carefully against R2.",
-        "EndIDPS flips to 0x00 / head unit proceeds — and it does NOT if R2 already worked, telling "
-        "us whether 0x11 wants an ACK or a data reply.",
-        opt11_mode="ret_options", general_options=GENERAL_APP_BIT),
+        "R3", "transID echo + answer cmd 0x11 with ACK success",
+        "If R2 speeds things up but IDPS still doesn't complete, add the next-likeliest fix: stop "
+        "telling the head unit 'unknown id' for its iPod-options request (0x11) and ACK it success.",
+        "IDPS completes (EndIDPS=0x00 / new command class) on top of R2's timing fix.",
+        echo_transid=True, opt11_mode="ack_success", general_options=GENERAL_APP_BIT),
 
     Hypothesis(
-        "R4", "Drop the app-communication bit: General options = 0",
-        "Tests whether the option BITS (not the 0x11 reply) are what the head unit rejects. If "
-        "reporting 0x2000 for General Lingo is unexpected during IDPS, zeroing it may let IDPS "
-        "complete. Isolates the 0x4b/0x4c option value from the 0x11 question.",
-        "EndIDPS flips to 0x00 with options=0, implicating the option bitmask rather than 0x11.",
-        opt11_mode="unknown_id", general_options=0),
+        "R4", "transID echo + RetiPodOptions data reply to 0x11 (cmd 0x12, SPECULATIVE)",
+        "Like R3 but answers 0x11 with a real options reply (cmd 0x12, guessed pairing, echoing "
+        "transID + options) instead of an ACK — the firmware receives a 'RetiPodOutOption', hinting "
+        "0x11 wants data, not an ACK. Command id/shape are a guess; compare against R3.",
+        "IDPS completes where R3 didn't — implicating 0x11 wanting a data reply.",
+        echo_transid=True, opt11_mode="ret_options", general_options=GENERAL_APP_BIT),
 
     Hypothesis(
-        "R5", "Combined best guess: 0x11 ACK success + General app bit + claim every queried lingo",
-        "If no single-variable change is enough, this stacks the most plausible ones: acknowledge "
-        "0x11, keep the app bit for General, and report a non-zero option set for the other lingoes "
-        "the head unit specifically asked about (0x02/0x03/0x04/0x0c/0x0e) in case it requires the "
-        "iPod to claim support for them.",
-        "EndIDPS flips to 0x00 / head unit proceeds — then peel back which piece mattered.",
-        opt11_mode="ack_success", general_options=GENERAL_APP_BIT, other_lingo_options=GENERAL_APP_BIT),
+        "R5", "transID echo + 0x11 ACK + claim every queried lingo",
+        "Stacks the remaining plausible fixes on top of the timing fix: ACK 0x11 and report a "
+        "non-zero option set for the non-General lingoes the head unit specifically asks about "
+        "(0x02/0x03/0x04/0x0c/0x0e), in case it requires the iPod to claim support for them.",
+        "IDPS completes — then peel back which piece mattered.",
+        echo_transid=True, opt11_mode="ack_success", general_options=GENERAL_APP_BIT,
+        other_lingo_options=GENERAL_APP_BIT),
 ]
 
 
@@ -284,10 +298,14 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
     # `general_options`; every other lingo gets `other_lingo_options` — both configurable per
     # hypothesis (round 1 rejected IDPS with General=0x2000/others=0, so these are under test). ----
     if cmd == iap.CMD_GET_IPOD_OPTIONS_FOR_LINGO:
+        # Request payload is [transIdHi, transIdLo, lingoId]; lingoId is the last byte. When
+        # echo_transid is set, prepend the request's 2-byte transID to our 0x4c reply so the head
+        # unit can correlate it (round-1 timing showed uncorrelated replies time out ~18s each).
         lingo_id = payload[-1]
         options = hyp.general_options if lingo_id == iap.LINGO_GENERAL else hyp.other_lingo_options
+        prefix = payload[:2] if (hyp.echo_transid and len(payload) >= 2) else b""
         reply = iap.build_packet(iap.LINGO_GENERAL, iap.CMD_RET_IPOD_OPTIONS_FOR_LINGO,
-                                 bytes([lingo_id]) + struct.pack(">Q", options))
+                                 prefix + bytes([lingo_id]) + struct.pack(">Q", options))
         out.append(reply)
         return out
     if cmd == iap.CMD_REQUEST_LINGO_PROTOCOL_VERSION:
@@ -324,6 +342,7 @@ def rfcomm_session(harness, fd, device):
     harness.log("note", event="rfcomm_connected", device=str(device))
     print(f"\n[conn] RFCOMM connected from {device} (hypothesis {harness.current.key} armed)")
     rx_buf = bytearray()
+    conn_t0 = time.time()   # per-connection clock, so the operator can watch step latency live
     try:
         while True:
             try:
@@ -334,7 +353,7 @@ def rfcomm_session(harness, fd, device):
             if not chunk:
                 break
             rx_buf += chunk
-            _drain(harness, sock, rx_buf)
+            _drain(harness, sock, rx_buf, conn_t0)
     finally:
         harness.connected = False
         harness.log("note", event="rfcomm_closed", device=str(device))
@@ -342,7 +361,7 @@ def rfcomm_session(harness, fd, device):
         sock.close()
 
 
-def _drain(harness, sock, rx_buf):
+def _drain(harness, sock, rx_buf, conn_t0):
     """Parse and dispatch every complete packet currently in rx_buf."""
     progressed = True
     while progressed and rx_buf:
@@ -353,15 +372,20 @@ def _drain(harness, sock, rx_buf):
             raw = bytes(rx_buf[:consumed])
             del rx_buf[:consumed]
             n = harness.count_rx(cmd)
+            dt = time.time() - conn_t0
             harness.log("rx", lingo=lingo, cmd=cmd, payload=payload.hex(), raw=raw.hex(),
-                        cmd_seen_in_window=n)
-            print(f"  [rx#{n}] lingo=0x{lingo:02x} cmd=0x{cmd:02x} payload={payload.hex()}")
+                        cmd_seen_in_window=n, t_since_connect=round(dt, 3))
+            # +Xs is the key signal this round: a healthy handshake keeps these gaps sub-second; a
+            # ~18s jump means the head unit timed out waiting for a reply it didn't accept.
+            print(f"  [rx#{n} +{dt:5.1f}s] lingo=0x{lingo:02x} cmd=0x{cmd:02x} "
+                  f"payload={payload.hex()}")
             for pkt in respond_to_packet(harness, hyp, lingo, cmd, payload):
                 sock.send(pkt)
                 harness.log("tx", raw=pkt.hex(),
                             note=f"reply under {hyp.key}/{hyp.start_idps}/{hyp.sync}")
                 print(f"  [tx  ] {pkt.hex()}")
-                time.sleep(iap.INTER_PACKET_DELAY_S)
+                if iap.INTER_PACKET_DELAY_S:
+                    time.sleep(iap.INTER_PACKET_DELAY_S)
             progressed = True
         elif skip:
             garbage = bytes(rx_buf[:skip])
@@ -411,8 +435,8 @@ def operator_console(harness):
         print(f"  Positive sign:  {hyp.positive_signal}")
         print(f"  Behavior:       StartIDPS={hyp.start_idps}  sync={hyp.sync}  "
               f"idps_body={hyp.run_idps_body}  init_auth={hyp.init_auth}")
-        print(f"                  cmd0x11={hyp.opt11_mode}  general_opts=0x{hyp.general_options:x}  "
-              f"other_lingo_opts=0x{hyp.other_lingo_options:x}")
+        print(f"                  echo_transid={hyp.echo_transid}  cmd0x11={hyp.opt11_mode}  "
+              f"general_opts=0x{hyp.general_options:x}  other_lingo_opts=0x{hyp.other_lingo_options:x}")
         cmd = _ask("\n  Press Enter to ARM this hypothesis (or s/r/q): ").lower()
         if cmd == "q":
             break
@@ -427,7 +451,7 @@ def operator_console(harness):
                     start_idps=hyp.start_idps, sync=hyp.sync,
                     run_idps_body=hyp.run_idps_body, init_auth=hyp.init_auth,
                     opt11_mode=hyp.opt11_mode, general_options=hyp.general_options,
-                    other_lingo_options=hyp.other_lingo_options)
+                    other_lingo_options=hyp.other_lingo_options, echo_transid=hyp.echo_transid)
         print(f"\n  >>> ARMED ({hyp.key}). Now LAUNCH HondaLink on the head unit and watch it.")
         print("      (If it's already open, back out and re-enter the HondaLink source to force a")
         print("       fresh connection.) Live rx/tx traffic prints below as it happens.")
@@ -506,6 +530,11 @@ def main():
     if os.geteuid() != 0:
         print("Must run as root", file=sys.stderr)
         sys.exit(1)
+
+    # We're racing the head unit's app-launch deadline (round-1 timing showed a ~18s-per-step
+    # budget being blown), so drop the production daemon's 50ms inter-packet spacing — reply as fast
+    # as possible. The head unit handled our back-to-back initial replies fine in round 1.
+    iap.INTER_PACKET_DELAY_S = 0.0
 
     suffix = session_suffix()
     harness = Harness(f"guided_results_{suffix}.jsonl", f"guided_results_{suffix}.txt")
