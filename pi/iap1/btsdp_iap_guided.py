@@ -382,6 +382,49 @@ HYPOTHESES = [
 # Per-connection response logic
 # ===========================================================================
 
+# ===========================================================================
+# Connection-phase instrumentation (added 2026-08-12, ROUND 18 diagnostics)
+# ===========================================================================
+# Maps the wire-observable milestones to the head unit's firmware chain (traced in AppMode.md and
+# memory ROUND 17-18):
+#   iAP1 auth -> NotifyIOSAuthEvent 'AppMode Active' -> NotifyStartSmartPhoneApps
+#   (guards: SPP-not-conn, m_pLPALMIf, BDaddr!=0, m_pAuthInfo) -> ConnectPhoneApp
+#   -> RequestConnectAvSpp dials av1/av2 -> DataParts 0xB1/0xB2/0xB3.
+# We can't read the head unit's internal guard logs, so we infer WHICH guard fails from how far this
+# observable chain gets. The single most important signal is whether the head unit ever DIALS our
+# av1/av2 (av_inbound_dial): reaching EI mode but never seeing that dial pins the stall to
+# NotifyStartSmartPhoneApps (m_pAuthInfo or BDaddr).
+PHASE_CHAIN = [
+    ("rfcomm_iap",       "iAP RFCOMM channel opened by head unit"),
+    ("idps_start",       "StartIDPS (0x38) received"),
+    ("fid_tokens",       "SetFIDTokenValues (0x39) received"),
+    ("idps_end",         "EndIDPS (0x3b) received"),
+    ("mfi_auth_info",    "MFi RetDevAuthInfo (0x15) received — head unit auth begins"),
+    ("mfi_signature",    "MFi RetDevAuthSignature (0x18) received"),
+    ("mfi_status_acked", "we sent AckDevAuthStatus (0x19) — Layer-1 iAP auth complete on our side"),
+    ("ei_mode",          "head unit entered Extended-Interface mode (0x05 / lingo 0x04)"),
+    ("av_inbound_dial",  "*** head unit DIALED our av1/av2 (the AppMode AV connect) ***"),
+    ("dataparts_b1",     "DataParts StartAuth (0xB1) received on the AV channel"),
+]
+_PHASE_DESC = dict(PHASE_CHAIN)
+# non-chain markers (diagnostic flags, not linear milestones)
+_PHASE_DESC["mfi_auth_reloop"] = "head unit re-sent 0x15 after our 0x19 (MFi auth not accepted)"
+_PHASE_DESC["stalled_awaiting_av_dial"] = "EI reached but no av1/av2 dial within the wait window"
+STALL_AWAIT_AV_S = 12.0   # after EI mode, how long we wait for the head unit to dial av1/av2
+
+CMD_ENTER_EI = 0x05       # General Lingo EnterExtendedInterfaceMode
+
+
+def _read_local_bdaddr(index=0):
+    """Local adapter BD address (e.g. 'DC:A6:32:..'), or None. Dependency-free (sysfs)."""
+    try:
+        with open(f"/sys/class/bluetooth/hci{index}/address") as fh:
+            a = fh.read().strip().upper()
+        return a if len(a) == 17 and a.count(":") == 5 else None
+    except OSError:
+        return None
+
+
 class Harness:
     """Shared state between the operator-console thread and the RFCOMM session thread(s)."""
 
@@ -398,6 +441,10 @@ class Harness:
         self.connected = False
         self.head_unit_bdaddr = None     # learned from the inbound iAP connection (device path)
         self.av_out_started = False      # guards the one-shot outbound AV connect (CHANGE 2)
+        # ---- phase instrumentation (per-window) ----
+        self.local_bdaddr = None         # this adapter's BD address (set once at startup)
+        self.conn_t0 = None              # wall clock of the current iAP connection start
+        self.phases = {}                 # phase_key -> {t_since_connect, ...}; reset each window
 
     # ---- logging (thread-safe) ----
     def log(self, direction, **fields):
@@ -423,12 +470,68 @@ class Harness:
             self.current = hyp
             self.window_id += 1
             self.rx_counts = {}
+            self.phases = {}
             iap.OUTGOING_SYNC_MODE = "full" if hyp.sync == "full" else "short"
 
     def count_rx(self, cmd):
         with self.lock:
             self.rx_counts[cmd] = self.rx_counts.get(cmd, 0) + 1
             return self.rx_counts[cmd]
+
+    # ---- phase instrumentation -------------------------------------------------
+    def has_phase(self, key):
+        with self.lock:
+            return key in self.phases
+
+    def mark_phase(self, key, **detail):
+        """Record the FIRST time a milestone is observed this window. Returns True on first hit
+        (so callers can arm one-shot side effects like the stall watchdog), False on repeats."""
+        with self.lock:
+            if key in self.phases:
+                return False
+            dt = round(time.time() - self.conn_t0, 3) if self.conn_t0 else None
+            self.phases[key] = {"t_since_connect": dt, **detail}
+        self.log("phase", phase=key, t_since_connect=dt, **detail)
+        desc = _PHASE_DESC.get(key, key)
+        print(f"  [PHASE +{(dt if dt is not None else 0):>6}s] {key} — {desc}")
+        return True
+
+    def phase_summary(self):
+        """(checklist_text, interpretation) describing how far the chain got this window."""
+        with self.lock:
+            reached = dict(self.phases)
+        lines = []
+        for key, desc in PHASE_CHAIN:
+            hit = key in reached
+            t = reached[key].get("t_since_connect") if hit else None
+            tstr = f" (+{t}s)" if t is not None else ""
+            lines.append(f"    [{'x' if hit else ' '}] {key}{tstr} — {desc}")
+        return "\n".join(lines), self._interpret(reached)
+
+    @staticmethod
+    def _interpret(reached):
+        has = reached.__contains__
+        if not has("rfcomm_iap"):
+            return "No iAP connection — head unit never opened the RFCOMM channel this window."
+        if has("av_inbound_dial"):
+            if has("dataparts_b1"):
+                return ("BREAKTHROUGH: head unit dialed av1/av2 AND sent DataParts 0xB1. The L2 AppMode "
+                        "auth is live — capture the 0xB1/0xB2 exchange for the identity-blob layout.")
+            return ("Head unit DIALED av1/av2 but no 0xB1 yet — the AV connect works; the DataParts "
+                    "auth should follow. Watch for 0xB1 on that channel.")
+        if reached.get("mfi_auth_reloop"):
+            return ("MFi auth is LOOPING (head unit re-sent 0x15 after our 0x19) -> it did NOT accept the "
+                    "authentication -> m_pAuthInfo stays NULL -> NotifyStartSmartPhoneApps bails. "
+                    "FIX TARGET: Layer-1 MFi auth completion (challenge/status handling).")
+        if has("ei_mode") or has("mfi_status_acked"):
+            return ("STALL between iAP-auth and the AppMode AV dial: reached EI-mode / auth-complete but "
+                    "the head unit never dialed av1/av2. => a NotifyStartSmartPhoneApps guard fails "
+                    "(m_pAuthInfo or BDaddr). Cross-check the logged local_bdaddr against the address the "
+                    "head unit paired with; if it matches, the next fix target is what sets m_pAuthInfo "
+                    "(NotifyIOSAuthEvent 'AppMode Active').")
+        if has("idps_end") or has("mfi_signature"):
+            return ("Stalled during IDPS/MFi auth (never reached EI mode). Layer-1 auth did not complete.")
+        return "Stalled early in IDPS — head unit did not finish identification."
 
 
 def build_ei_packet(cmd16, payload):
@@ -596,11 +699,14 @@ def rfcomm_session(harness, fd, device):
     sock.setblocking(True)
     harness.connected = True
     harness.head_unit_bdaddr = _bdaddr_from_device_path(device)
-    harness.log("note", event="rfcomm_connected", device=str(device),
-                bdaddr=harness.head_unit_bdaddr)
-    print(f"\n[conn] RFCOMM connected from {device} (hypothesis {harness.current.key} armed)")
-    rx_buf = bytearray()
     conn_t0 = time.time()   # per-connection clock, so the operator can watch step latency live
+    harness.conn_t0 = conn_t0
+    harness.log("note", event="rfcomm_connected", device=str(device),
+                bdaddr=harness.head_unit_bdaddr, local_bdaddr=harness.local_bdaddr)
+    print(f"\n[conn] RFCOMM connected from {device} (hypothesis {harness.current.key} armed)")
+    harness.mark_phase("rfcomm_iap", remote_bdaddr=harness.head_unit_bdaddr,
+                       local_bdaddr=harness.local_bdaddr)
+    rx_buf = bytearray()
     try:
         while True:
             try:
@@ -617,6 +723,52 @@ def rfcomm_session(harness, fd, device):
         harness.log("note", event="rfcomm_closed", device=str(device))
         print(f"[conn] RFCOMM session with {device} ended")
         sock.close()
+
+
+def _av_dial_watchdog(harness, window_at_arm):
+    """Fires STALL_AWAIT_AV_S after EI mode. If the head unit still hasn't dialed av1/av2, log a loud
+    marker — that is the wire-level fingerprint of a NotifyStartSmartPhoneApps guard failing."""
+    if harness.window_id != window_at_arm:
+        return   # a new window was armed meanwhile; stale timer
+    if harness.has_phase("av_inbound_dial"):
+        return
+    dt = round(time.time() - harness.conn_t0, 3) if harness.conn_t0 else None
+    harness.log("phase", phase="stalled_awaiting_av_dial", t_since_connect=dt,
+                waited_s=STALL_AWAIT_AV_S)
+    print(f"  [PHASE] stalled_awaiting_av_dial — {STALL_AWAIT_AV_S:.0f}s after EI mode the head unit "
+          f"still has NOT dialed av1/av2 => NotifyStartSmartPhoneApps guard failing (m_pAuthInfo/BDaddr)")
+
+
+def _track_rx_phase(harness, lingo, cmd, payload):
+    """Map an inbound iAP packet to a milestone in PHASE_CHAIN (see the block above class Harness)."""
+    if lingo == iap.LINGO_GENERAL:
+        if cmd == iap.CMD_START_IDPS:
+            harness.mark_phase("idps_start")
+        elif cmd == iap.CMD_SET_FID_TOKEN_VALUES:
+            harness.mark_phase("fid_tokens")
+        elif cmd == iap.CMD_END_IDPS:
+            # last payload byte is accEndIDPSStatus (0x00=ok, 0x01=fail/reset per round-2 analysis)
+            status = payload[-1] if payload else None
+            harness.mark_phase("idps_end", accEndIDPSStatus=status)
+        elif cmd == iap.CMD_RET_DEV_AUTHENTICATION_INFO:      # 0x15
+            if harness.has_phase("mfi_status_acked"):
+                # head unit re-opened auth AFTER we already acked status -> it rejected the auth.
+                if harness.mark_phase("mfi_auth_reloop"):
+                    print("  [PHASE] mfi_auth_reloop — head unit RE-SENT 0x15 after our 0x19 "
+                          "(Layer-1 MFi auth NOT accepted -> m_pAuthInfo stays NULL)")
+            else:
+                harness.mark_phase("mfi_auth_info")
+        elif cmd == iap.CMD_RET_DEV_AUTHENTICATION_SIGNATURE:  # 0x18
+            harness.mark_phase("mfi_signature")
+        elif cmd == CMD_ENTER_EI:                              # 0x05
+            if harness.mark_phase("ei_mode", via="cmd_0x05"):
+                threading.Timer(STALL_AWAIT_AV_S, _av_dial_watchdog,
+                                args=(harness, harness.window_id)).start()
+    elif lingo == iap.LINGO_EXTENDED_INTERFACE:
+        # any Extended-Interface (lingo 0x04) packet also proves the head unit is in EI mode
+        if harness.mark_phase("ei_mode", via="lingo_0x04"):
+            threading.Timer(STALL_AWAIT_AV_S, _av_dial_watchdog,
+                            args=(harness, harness.window_id)).start()
 
 
 def _drain(harness, sock, rx_buf, conn_t0):
@@ -637,6 +789,7 @@ def _drain(harness, sock, rx_buf, conn_t0):
             # ~18s jump means the head unit timed out waiting for a reply it didn't accept.
             print(f"  [rx#{n} +{dt:5.1f}s] lingo=0x{lingo:02x} cmd=0x{cmd:02x} "
                   f"payload={payload.hex()}")
+            _track_rx_phase(harness, lingo, cmd, payload)
             for pkt in respond_to_packet(harness, hyp, lingo, cmd, payload):
                 sock.send(pkt)
                 harness.log("tx", raw=pkt.hex(),
@@ -644,6 +797,11 @@ def _drain(harness, sock, rx_buf, conn_t0):
                 print(f"  [tx  ] {pkt.hex()}")
                 if iap.INTER_PACKET_DELAY_S:
                     time.sleep(iap.INTER_PACKET_DELAY_S)
+            # We reply 0x19 (AckDevAuthStatus) to every 0x18 under init_auth — that is our side of
+            # Layer-1 MFi auth completing. Mark it AFTER the reply is actually on the wire.
+            if lingo == iap.LINGO_GENERAL and cmd == iap.CMD_RET_DEV_AUTHENTICATION_SIGNATURE \
+                    and hyp.init_auth:
+                harness.mark_phase("mfi_status_acked")
             progressed = True
         elif skip:
             garbage = bytes(rx_buf[:skip])
@@ -728,6 +886,20 @@ def operator_console(harness):
         seen_str = ", ".join(f"0x{c:02x}×{n}" for c, n in sorted(seen.items())) or "(none)"
         print(f"\n  Commands received this window: {seen_str}")
 
+        # connection-phase checklist + interpretation — the diagnostic that pins the failing guard
+        checklist, interp = harness.phase_summary()
+        print("\n  Connection-phase reached this window:")
+        print(checklist)
+        print(f"\n  >>> DIAGNOSIS: {interp}")
+        harness.log("result", event="phase_summary",
+                    phases_reached=[k for k, _ in PHASE_CHAIN if harness.has_phase(k)],
+                    interpretation=interp,
+                    local_bdaddr=harness.local_bdaddr, remote_bdaddr=harness.head_unit_bdaddr)
+        harness.note_txt(f"[{hyp.key}] phases: "
+                         f"{','.join(k for k, _ in PHASE_CHAIN if harness.has_phase(k)) or 'none'}"
+                         f"  local_bd={harness.local_bdaddr} remote_bd={harness.head_unit_bdaddr}")
+        harness.note_txt(f"[{hyp.key}] DIAGNOSIS: {interp}")
+
         outcome = _collect_outcome(harness, hyp, seen_str)
         harness.log("result", **outcome)
         harness.note_txt(f"[{hyp.key}] outcome={outcome['outcome']} "
@@ -811,6 +983,8 @@ def _log_dataparts(harness, tag, direction, chunk):
                     pack_id=f.pack_id, name=f.name, check=f.check, check_ok=f.check_ok,
                     payload=f.payload.hex())
         print(f"  [dataparts {tag} {direction}] {f.describe()}")
+        if f.pack_id == 0xB1 and direction == "rx":
+            harness.mark_phase("dataparts_b1", channel=tag, payload=f.payload.hex())
 
 
 def _av_out_session(harness, bdaddr, tag, channel):
@@ -866,6 +1040,7 @@ def data_channel_session(harness, tag, fd, device):
     sock = socket.fromfd(fd, socket.AF_BLUETOOTH, socket.SOCK_STREAM)
     sock.setblocking(True)
     harness.log("note", event="datachan_connected", channel=tag, device=str(device))
+    harness.mark_phase("av_inbound_dial", channel=tag, device=str(device))
     print(f"\n[datachan {tag}] *** CONNECTED from {device} — head unit opened the AV/data channel! ***")
     try:
         while True:
@@ -926,6 +1101,13 @@ def main():
 
     suffix = session_suffix()
     harness = Harness(f"guided_results_{suffix}.jsonl", f"guided_results_{suffix}.txt")
+
+    # Record this adapter's BD address up front. The head unit's NotifyStartSmartPhoneApps bails on
+    # GetBDAddress ALL 0 / "IAP_BT BDAdder Not match"; having our address in the log lets us check it
+    # against the device the head unit paired with when the AV dial never happens.
+    harness.local_bdaddr = _read_local_bdaddr(0)
+    harness.log("note", event="startup", local_bdaddr=harness.local_bdaddr)
+    print(f"[btsdp-guided] local adapter BD address: {harness.local_bdaddr or '(unknown)'}")
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
