@@ -99,6 +99,49 @@ CONNECT_AV_ON_EI = True                         # auto-dial the head unit's AV c
 AV_CONNECT_DELAY_S = 1.5                         # let the head unit settle into EI before dialing
 _BTPROTO_RFCOMM = getattr(socket, "BTPROTO_RFCOMM", 3)
 
+# CHANGE 3 (2026-08-11) — REVERTED 2026-08-12 after appmode/3. The hypothesis was that BlueZ's default
+# av1/av2 record was missing 0x0006/0x0009 and the head unit refused to dial because of it. That was a
+# MISDIAGNOSIS: a server legitimately returns only the attributes it holds out of those optionally
+# requested, so a response of 0x0001/0x0004/0x0100 is normal. Worse, supplying a custom "ServiceRecord"
+# XML made BlueZ serve an EMPTY record (appmode/3: 2-byte responses for iAP/av1/av2), REGRESSING the
+# working default record from capture 2 (70-byte record WITH the RFCOMM channel in attr 0x0004).
+# Crucially, in capture 2 the head unit already had a complete, dial-able av1/av2 record and STILL never
+# dialed — so SDP was never the blocker. Keep the default BlueZ record (leave this False); the real
+# trigger for the head unit's RequestConnectAvSpp is elsewhere (iAP app/EA-session signal), not SDP.
+COMPLETE_AV_SDP = False
+
+
+def build_av_service_record(uuid_str, channel, name):
+    """A full SDP record for one AV/data SPP service, including the 0x0006/0x0009 attributes the head
+    unit requests (missing from BlueZ's default record). The RFCOMM channel must match the profile's
+    Channel option. 0x0009 advertises Serial Port profile v1.0, 0x0006 the standard en/UTF-8 base."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8" ?>\n'
+        '<record>\n'
+        '  <attribute id="0x0001">\n'
+        f'    <sequence><uuid value="{uuid_str}" /></sequence>\n'
+        '  </attribute>\n'
+        '  <attribute id="0x0004">\n'
+        '    <sequence>\n'
+        '      <sequence><uuid value="0x0100" /></sequence>\n'
+        f'      <sequence><uuid value="0x0003" /><uint8 value="0x{channel:02x}" /></sequence>\n'
+        '    </sequence>\n'
+        '  </attribute>\n'
+        '  <attribute id="0x0005">\n'
+        '    <sequence><uuid value="0x1002" /></sequence>\n'
+        '  </attribute>\n'
+        '  <attribute id="0x0006">\n'
+        '    <sequence><uint16 value="0x656e" /><uint16 value="0x006a" /><uint16 value="0x0100" /></sequence>\n'
+        '  </attribute>\n'
+        '  <attribute id="0x0009">\n'
+        '    <sequence>\n'
+        '      <sequence><uuid value="0x1101" /><uint16 value="0x0100" /></sequence>\n'
+        '    </sequence>\n'
+        '  </attribute>\n'
+        f'  <attribute id="0x0100"><text value="{name}" /></attribute>\n'
+        '</record>\n'
+    )
+
 
 # ===========================================================================
 # Hypotheses
@@ -905,7 +948,7 @@ def main():
     for tag, uuid_str, chan in AV_DATA_UUIDS:
         path = f"/9carplay/av_{tag}"
         DataChannelProfile(bus, path, harness, tag)
-        manager.RegisterProfile(path, uuid_str, {
+        av_opts = {
             "Name": f"9CarPlay AV data ({tag})",
             "RequireAuthentication": dbus.Boolean(False),
             "RequireAuthorization": dbus.Boolean(False),
@@ -915,7 +958,13 @@ def main():
             # outbound dial now happens post-EI via connect_head_unit_av().
             "AutoConnect": dbus.Boolean(False),
             "Channel": dbus.UInt16(chan),
-        })
+        }
+        # CHANGE 3: publish a complete SDP record carrying the 0x0006/0x0009 attributes the head unit
+        # requests (BlueZ's default record omits them).
+        if COMPLETE_AV_SDP:
+            av_opts["ServiceRecord"] = build_av_service_record(
+                uuid_str, chan, f"9CarPlay AV data ({tag})")
+        manager.RegisterProfile(path, uuid_str, av_opts)
         print(f"[btsdp-guided] Registered AV/data profile {tag} (UUID={uuid_str}, channel={chan})")
 
     threading.Thread(target=operator_console, args=(harness,), daemon=True).start()
