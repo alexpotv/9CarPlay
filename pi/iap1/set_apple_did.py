@@ -77,7 +77,7 @@ def _bind_mgmt(sock):
         raise OSError(err, os.strerror(err))
 
 
-def set_device_id(index, source, vendor, product, version):
+def set_device_id(index, source, vendor, product, version, debug=False):
     sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_RAW, BTPROTO_HCI)
     try:
         _bind_mgmt(sock)
@@ -87,24 +87,34 @@ def set_device_id(index, source, vendor, product, version):
 
     params = struct.pack("<HHHH", source, vendor, product, version)
     pkt = struct.pack("<HHH", MGMT_OP_SET_DEVICE_ID, index, len(params)) + params
+    if debug:
+        print(f"[debug] tx pkt ({len(pkt)}B): {pkt.hex()}  "
+              f"(op=0x{MGMT_OP_SET_DEVICE_ID:04x} idx={index} plen={len(params)} "
+              f"src=0x{source:04x} ven=0x{vendor:04x} prod=0x{product:04x} ver=0x{version:04x})")
     sock.send(pkt)
     sock.settimeout(3.0)
-    try:
-        resp = sock.recv(1024)
-    except socket.timeout:
-        sock.close()
-        raise SystemExit("no mgmt response (timeout) — is the adapter index correct?")
-    sock.close()
 
-    ev_op, ev_index, ev_len = struct.unpack_from("<HHH", resp, 0)
-    body = resp[6:6 + ev_len]
-    if ev_op == MGMT_EV_CMD_COMPLETE and len(body) >= 3:
-        cmd_op, status = struct.unpack_from("<HB", body, 0)
-        return status
-    if ev_op == MGMT_EV_CMD_STATUS and len(body) >= 3:
-        cmd_op, status = struct.unpack_from("<HB", body, 0)
-        return status
-    return -1
+    # Read mgmt packets until we get the Command Complete/Status for OUR opcode (skip unsolicited
+    # events, which is the usual reason a naive single recv() misreads the status).
+    try:
+        while True:
+            resp = sock.recv(1024)
+            if len(resp) < 6:
+                continue
+            ev_op, ev_index, ev_len = struct.unpack_from("<HHH", resp, 0)
+            body = resp[6:6 + ev_len]
+            if debug:
+                print(f"[debug] rx ev=0x{ev_op:04x} idx={ev_index} len={ev_len} body={body.hex()}")
+            if ev_op in (MGMT_EV_CMD_COMPLETE, MGMT_EV_CMD_STATUS) and len(body) >= 3:
+                cmd_op, status = struct.unpack_from("<HB", body, 0)
+                if cmd_op != MGMT_OP_SET_DEVICE_ID:
+                    continue          # a response to some other command — keep waiting
+                return status
+            # otherwise it's an unsolicited event; keep reading
+    except socket.timeout:
+        return -1
+    finally:
+        sock.close()
 
 
 def main():
@@ -115,6 +125,7 @@ def main():
     p.add_argument("--product", type=_hexint, default=DEFAULT_PRODUCT, help="product ID (default 0x12A8)")
     p.add_argument("--version", type=_hexint, default=DEFAULT_VERSION, help="version (default 0x0100)")
     p.add_argument("--off", action="store_true", help="clear the DID (source=0)")
+    p.add_argument("--debug", action="store_true", help="dump raw mgmt tx/rx packets")
     args = p.parse_args()
 
     if not hasattr(socket, "AF_BLUETOOTH"):
@@ -125,7 +136,7 @@ def main():
     else:
         source, vendor, product, version = args.source, args.vendor, args.product, args.version
 
-    status = set_device_id(args.index, source, vendor, product, version)
+    status = set_device_id(args.index, source, vendor, product, version, debug=args.debug)
     if status == 0:
         if args.off:
             print(f"[set_apple_did] cleared Device ID on hci{args.index}")
@@ -135,8 +146,12 @@ def main():
                   f"version=0x{version:04x}")
         print("  verify:  sdptool browse local | grep -iA3 PnP   (or re-capture and check PnP response)")
         return 0
-    print(f"[set_apple_did] mgmt SET_DEVICE_ID failed, status=0x{status:02x} "
-          f"(0x0c=not powered? 0x11=invalid index?)", file=sys.stderr)
+
+    _MGMT_STATUS = {0x0b: "REJECTED", 0x0c: "NOT_SUPPORTED", 0x0d: "INVALID_PARAMS",
+                    0x0f: "NOT_POWERED", 0x11: "INVALID_INDEX", -1 & 0xff: "no/again"}
+    name = _MGMT_STATUS.get(status, "?")
+    print(f"[set_apple_did] mgmt SET_DEVICE_ID failed, status=0x{status & 0xff:02x} ({name}). "
+          f"Re-run with --debug and send me the output.", file=sys.stderr)
     return 1
 
 
