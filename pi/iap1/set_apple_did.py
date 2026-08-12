@@ -26,6 +26,7 @@ Verify afterwards (should show vendor 05ac):
 """
 
 import argparse
+import os
 import socket
 import struct
 import sys
@@ -47,14 +48,39 @@ DEFAULT_PRODUCT = 0x12A8   # a common iPhone USB product ID
 DEFAULT_VERSION = 0x0100
 
 
+AF_BLUETOOTH = 31
+
+
 def _hexint(s):
     return int(s, 0)
+
+
+def _bind_mgmt(sock):
+    """Bind `sock` to the BlueZ mgmt control channel.
+
+    Python's socket.bind() only accepts the (dev, channel) HCI tuple on some builds ("wrong format"
+    on others), so bind the raw sockaddr_hci via libc directly — version-independent on Linux.
+      struct sockaddr_hci { unsigned short family; unsigned short dev; unsigned short channel; }
+    """
+    # try the native form first (works on newer CPython); fall back to ctypes.
+    try:
+        sock.bind((HCI_DEV_NONE, HCI_CHANNEL_CONTROL))
+        return
+    except (OSError, TypeError, ValueError):
+        pass
+    import ctypes
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    addr = struct.pack("HHH", AF_BLUETOOTH, HCI_DEV_NONE, HCI_CHANNEL_CONTROL)  # native, packed
+    buf = ctypes.create_string_buffer(addr, len(addr))
+    if libc.bind(sock.fileno(), buf, len(addr)) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
 
 
 def set_device_id(index, source, vendor, product, version):
     sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_RAW, BTPROTO_HCI)
     try:
-        sock.bind((HCI_DEV_NONE, HCI_CHANNEL_CONTROL))
+        _bind_mgmt(sock)
     except OSError as e:
         sock.close()
         raise SystemExit(f"failed to bind mgmt control socket ({e}); run as root with bluetoothd up")
