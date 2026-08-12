@@ -211,7 +211,8 @@ class Hypothesis:
                  opt11_mode="unknown_id", general_options=GENERAL_APP_BIT, other_lingo_options=0,
                  echo_transid=True, auth_trigger="after_endidps", force_idps_success=False,
                  cert_section_mode="accept_first", auth_transid=False, defer_challenge=False,
-                 challenge_retry_byte=True, autoack_unknown=False):
+                 challenge_retry_byte=True, autoack_unknown=False,
+                 ei_return_dbrecords=False, ei_return_cmd=0x2c, ei_return_count=0):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -253,6 +254,17 @@ class Hypothesis:
         # autoack_unknown: ACK any otherwise-unrecognized General Lingo command with a transID-echoing
         # success ACK — used to walk the post-auth SystemInit phase and discover its command sequence.
         self.autoack_unknown = autoack_unknown
+        # ei_return_dbrecords: EXPERIMENTAL (ROUND 20). For the Extended-Interface command
+        # `ei_return_cmd`, reply with a typed ReturnNumberCategorizedDBRecords (EI cmd 0x0019,
+        # payload = transID + uint32 count) INSTEAD of the generic EI ACK. The RE'd SystemInit state
+        # machine (references/cr-v/IDPS_STATE_MAP.md, states 13-16) shows the head unit needs a
+        # record COUNT here, not an ACK, to advance past EI DB setup toward StartBluetoothConnection
+        # Update (the av1/av2 dial). Unverified: the exact EI opcode/format is behind the ADCL's
+        # internal-id scheme, so this is a best-motivated guess — kept in its own hypothesis (Z1) so
+        # the proven Y1 ACK-walk path is untouched and the stall-namer runs either way.
+        self.ei_return_dbrecords = ei_return_dbrecords
+        self.ei_return_cmd = ei_return_cmd
+        self.ei_return_count = ei_return_count
 
 
 # ---------------------------------------------------------------------------------------------
@@ -375,6 +387,21 @@ HYPOTHESES = [
         "Auth completes (0x18 -> 0x19), cmd 0x4f arrives, then silence.",
         cert_section_mode="ack_transid", auth_transid=True,
         auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=False),
+
+    Hypothesis(
+        "Z1", "EXPERIMENTAL: typed ReturnNumberCategorizedDBRecords for EI 0x2c",
+        "Same proven path as Y1 (full auth + EI-ACK walk), but for the LAST Extended-Interface "
+        "command (0x2c, where Y1 goes silent) reply with a typed ReturnNumberCategorizedDBRecords "
+        "(EI cmd 0x0019, payload=transID+uint32 count=0) instead of an EI ACK. Per the RE'd "
+        "SystemInit state machine (IDPS_STATE_MAP.md states 13-16) the head unit needs a record "
+        "COUNT here to advance toward StartBluetoothConnectionUpdate. Unverified opcode/format — "
+        "arm Y1 first for the namer baseline, then Z1 to test this.",
+        "The head unit does NOT go silent after 0x2c — it sends a further command (states 15-20: "
+        "ResetDBHierarchy audio / Exit EI / Bluetooth connection) OR finally dials av1/av2 "
+        "(av_inbound_dial). Any change from Y1's post-0x2c silence is signal.",
+        cert_section_mode="ack_transid", auth_transid=True,
+        auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
+        ei_return_dbrecords=True, ei_return_cmd=0x2c, ei_return_count=0),
 ]
 
 
@@ -411,8 +438,28 @@ _PHASE_DESC = dict(PHASE_CHAIN)
 _PHASE_DESC["mfi_auth_reloop"] = "head unit re-sent 0x15 after our 0x19 (MFi auth not accepted)"
 _PHASE_DESC["stalled_awaiting_av_dial"] = "EI reached but no av1/av2 dial within the wait window"
 STALL_AWAIT_AV_S = 12.0   # after EI mode, how long we wait for the head unit to dial av1/av2
+STALL_SILENCE_S = 6.0     # post-auth: how long the head unit must go silent before we name the
+                          # command it's stuck on (its retry unit is ~6s; normal gaps are sub-second)
 
 CMD_ENTER_EI = 0x05       # General Lingo EnterExtendedInterfaceMode
+
+# The head unit's post-auth SystemInit sequence (RE'd in references/cr-v/IDPS_STATE_MAP.md) needs a
+# TYPED iAP1 response at each 'Ret/Return...Wait' state; we currently blanket-ACK, which the state
+# machine rejects ("Not expect ID") and stalls on. These are the typed-response states, in order —
+# each iteration should implement the next one the namer points at.
+SYSTEMINIT_TYPED_STATES = [
+    "SupportedEventNotification",
+    "RetiPodPreferences (screen)  [class byte must match head unit's stored pref]",
+    "RetiPodPreferences (aspect)  [class byte must match]",
+    "ReturnExtendedInterfaceMode (enter)",
+    "ResetDBHierarchy (video) ack",
+    "ReturnNumberCategorizedDBRecords (video)  [return a record count]",
+    "ResetDBHierarchy (audio) ack",
+    "ReturnNumberCategorizedDBRecords (audio)  [return a record count]",
+    "ReturnExtendedInterfaceMode (exit)",
+    "BluetoothComponentInformation",
+    "StartBluetoothConnectionUpdate  [terminal -> SystemInit complete -> av1/av2 dial]",
+]
 
 
 def _read_local_bdaddr(index=0):
@@ -445,6 +492,12 @@ class Harness:
         self.local_bdaddr = None         # this adapter's BD address (set once at startup)
         self.conn_t0 = None              # wall clock of the current iAP connection start
         self.phases = {}                 # phase_key -> {t_since_connect, ...}; reset each window
+        # ---- stall-command namer (option b) ----
+        # We blanket-ACK unknown post-auth commands; the LAST one we blanket-ACKed before the head
+        # unit goes silent names the SystemInit state we must implement a typed response for next.
+        self.postauth_cmds = []          # ordered [{lingo,cmd,payload,reply,t}] since MFi auth done
+        self._silence_timer = None       # threading.Timer, reset on every post-auth rx
+        self._stall_reported = False     # one-shot guard for the stall report this window
 
     # ---- logging (thread-safe) ----
     def log(self, direction, **fields):
@@ -471,6 +524,11 @@ class Harness:
             self.window_id += 1
             self.rx_counts = {}
             self.phases = {}
+            self.postauth_cmds = []
+            self._stall_reported = False
+            if self._silence_timer:
+                self._silence_timer.cancel()
+                self._silence_timer = None
             iap.OUTGOING_SYNC_MODE = "full" if hyp.sync == "full" else "short"
 
     def count_rx(self, cmd):
@@ -496,16 +554,81 @@ class Harness:
         print(f"  [PHASE +{(dt if dt is not None else 0):>6}s] {key} — {desc}")
         return True
 
+    # ---- stall-command namer (option b) -----------------------------------------
+    def record_postauth(self, lingo, cmd, payload, reply_kind):
+        """Log a post-(MFi-auth) command and how we answered it. Only records once SystemInit has
+        begun (mfi_status_acked or ei_mode reached) — IDPS/auth commands are not SystemInit states."""
+        with self.lock:
+            if "mfi_status_acked" not in self.phases and "ei_mode" not in self.phases:
+                return
+            dt = round(time.time() - self.conn_t0, 3) if self.conn_t0 else None
+            self.postauth_cmds.append({"lingo": lingo, "cmd": cmd,
+                                       "payload": payload.hex(), "reply": reply_kind, "t": dt})
+
+    def arm_silence_watchdog(self):
+        """(Re)start the post-auth silence timer. If the head unit stays silent STALL_SILENCE_S after
+        its last command, _report_stall names the command it's waiting on a typed response for."""
+        with self.lock:
+            post = "mfi_status_acked" in self.phases or "ei_mode" in self.phases
+            done = self._stall_reported or "av_inbound_dial" in self.phases
+            if self._silence_timer:
+                self._silence_timer.cancel()
+                self._silence_timer = None
+            if not post or done:
+                return
+            win = self.window_id
+            self._silence_timer = threading.Timer(STALL_SILENCE_S, self._report_stall, args=(win,))
+            self._silence_timer.daemon = True
+            self._silence_timer.start()
+
+    def cancel_silence_watchdog(self):
+        with self.lock:
+            if self._silence_timer:
+                self._silence_timer.cancel()
+                self._silence_timer = None
+
+    def _report_stall(self, window_at_arm):
+        with self.lock:
+            if (window_at_arm != self.window_id or self._stall_reported
+                    or "av_inbound_dial" in self.phases):
+                return
+            self._stall_reported = True
+            cmds = list(self.postauth_cmds)
+        text = _format_stall_report(cmds)
+        self.log("stall_report", post_auth_cmds=cmds)
+        self.note_txt(text)
+        print(text)
+
     def phase_summary(self):
         """(checklist_text, interpretation) describing how far the chain got this window."""
         with self.lock:
             reached = dict(self.phases)
+            postauth = list(self.postauth_cmds)
         lines = []
+        seq = []   # (key, t) for reached chain phases in chain order, to find stall gaps
         for key, desc in PHASE_CHAIN:
             hit = key in reached
             t = reached[key].get("t_since_connect") if hit else None
             tstr = f" (+{t}s)" if t is not None else ""
             lines.append(f"    [{'x' if hit else ' '}] {key}{tstr} — {desc}")
+            if hit and t is not None:
+                seq.append((key, t))
+        # flag the largest gap between consecutive milestones — a >3s jump is the head unit timing
+        # out waiting for a reply it didn't accept (the ~18s IDPS/auth stalls).
+        worst = None
+        for (k0, t0), (k1, t1) in zip(seq, seq[1:]):
+            if worst is None or (t1 - t0) > worst[0]:
+                worst = (round(t1 - t0, 3), k0, k1)
+        if worst and worst[0] >= 3.0:
+            lines.append(f"    >> biggest stall: {worst[0]}s between '{worst[1]}' and '{worst[2]}' "
+                         f"(head unit waited for a reply it didn't accept)")
+        # stall-command namer: the last post-auth command we generic-ACKed is the SystemInit state
+        # whose typed response we still owe (see references/cr-v/IDPS_STATE_MAP.md).
+        if postauth and "av_inbound_dial" not in reached:
+            stall = next((c for c in reversed(postauth) if c["reply"] == "generic_ack"), postauth[-1])
+            lines.append(f"    >> STALL COMMAND (owe a typed response): lingo=0x{stall['lingo']:02x} "
+                         f"cmd=0x{stall['cmd']:04x} payload={stall['payload']} "
+                         f"[we answered: {stall['reply']}]  ({len(postauth)} post-auth cmd(s) seen)")
         return "\n".join(lines), self._interpret(reached)
 
     @staticmethod
@@ -523,6 +646,16 @@ class Harness:
             return ("MFi auth is LOOPING (head unit re-sent 0x15 after our 0x19) -> it did NOT accept the "
                     "authentication -> m_pAuthInfo stays NULL -> NotifyStartSmartPhoneApps bails. "
                     "FIX TARGET: Layer-1 MFi auth completion (challenge/status handling).")
+        idps = reached.get("idps_end")
+        if idps is not None and idps.get("accEndIDPSStatus") not in (0, None):
+            st = idps.get("accEndIDPSStatus")
+            return (f"*** IDPS FAILED (accEndIDPSStatus=0x{st:02x}) — THE UPSTREAM WALL. *** The head unit "
+                    f"went silent after we ACKed its SetFIDTokenValues (see the large pre-idps_end gap), "
+                    f"then ended IDPS with failure. The MFi auth + EI mode that follow are post-fail "
+                    f"recovery, so AppMode never activates and av1/av2 is never dialed. FIX HERE FIRST: "
+                    f"the head unit is not accepting our post-SetFIDTokenValues handling. Suspect our "
+                    f"premature mid-IDPS GetDevAuthInfo(0x14) and/or the RetFIDTokenValueACKs semantics — "
+                    f"goal is EndIDPS returning accEndIDPSStatus=0x00.")
         if has("ei_mode") or has("mfi_status_acked"):
             return ("STALL between iAP-auth and the AppMode AV dial: reached EI-mode / auth-complete but "
                     "the head unit never dialed av1/av2. => a NotifyStartSmartPhoneApps guard fails "
@@ -559,8 +692,14 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
         # the width). We don't yet know each EI command's reply, so autoack answers with an EI ACK
         # (cmd 0x0001, payload [transID(2), status=0x00, ackedCmdId(2)]) to keep it talking. Get/
         # Return-type EI commands (that want data) will retry — revealing which need real handlers.
+        trans_id = payload[:2] if len(payload) >= 2 else b"\x00\x00"
+        # EXPERIMENTAL (Z1): for the DB-records-query EI command, send a typed
+        # ReturnNumberCategorizedDBRecords (cmd 0x0019, payload = transID + uint32 count) instead of
+        # the generic EI ACK — the head unit needs a record COUNT to advance (IDPS_STATE_MAP.md).
+        if hyp.ei_return_dbrecords and cmd == hyp.ei_return_cmd:
+            out.append(build_ei_packet(0x0019, trans_id + struct.pack(">I", hyp.ei_return_count)))
+            return out
         if hyp.autoack_unknown:
-            trans_id = payload[:2] if len(payload) >= 2 else b"\x00\x00"
             out.append(build_ei_packet(0x0001, trans_id + bytes([0x00, (cmd >> 8) & 0xFF, cmd & 0xFF])))
         return out
     if lingo != iap.LINGO_GENERAL:
@@ -720,6 +859,13 @@ def rfcomm_session(harness, fd, device):
             _drain(harness, sock, rx_buf, conn_t0)
     finally:
         harness.connected = False
+        # If the head unit tore the connection down while stalled (never dialed av1/av2), name the
+        # stall command now — the teardown IS the stall on this head unit (it retries the whole
+        # connection). Fires only if the silence watchdog hasn't already reported.
+        if (harness.has_phase("mfi_status_acked") or harness.has_phase("ei_mode")) \
+                and not harness.has_phase("av_inbound_dial"):
+            harness._report_stall(harness.window_id)
+        harness.cancel_silence_watchdog()
         harness.log("note", event="rfcomm_closed", device=str(device))
         print(f"[conn] RFCOMM session with {device} ended")
         sock.close()
@@ -750,6 +896,10 @@ def _track_rx_phase(harness, lingo, cmd, payload):
             # last payload byte is accEndIDPSStatus (0x00=ok, 0x01=fail/reset per round-2 analysis)
             status = payload[-1] if payload else None
             harness.mark_phase("idps_end", accEndIDPSStatus=status)
+            if status not in (0, None):
+                harness.mark_phase("idps_fail", accEndIDPSStatus=status)
+                print(f"  [PHASE] idps_fail — head unit ended IDPS with accEndIDPSStatus=0x{status:02x} "
+                      f"(it did NOT accept our FID-token phase; AppMode won't activate)")
         elif cmd == iap.CMD_RET_DEV_AUTHENTICATION_INFO:      # 0x15
             if harness.has_phase("mfi_status_acked"):
                 # head unit re-opened auth AFTER we already acked status -> it rejected the auth.
@@ -771,6 +921,59 @@ def _track_rx_phase(harness, lingo, cmd, payload):
                             args=(harness, harness.window_id)).start()
 
 
+def _classify_reply(replies):
+    """Classify how we answered a received command: 'generic_ack' (General ACK 0x02 or EI ACK
+    0x0001 only), 'typed' (a real data response), or 'no_reply'. Used by the stall-command namer to
+    flag which post-auth commands got only a blanket ACK (the ones the head unit stalls on)."""
+    if not replies:
+        return "no_reply"
+
+    def is_generic(pkt):
+        b = pkt[2:] if pkt[:2] == iap.SYNC else (pkt[1:] if pkt[:1] == iap.SYNC_SHORT else pkt)
+        if len(b) < 3:
+            return False
+        lingo = b[1]
+        if lingo == iap.LINGO_GENERAL:
+            return b[2] == iap.CMD_ACK
+        if lingo == iap.LINGO_EXTENDED_INTERFACE:
+            return len(b) >= 4 and b[2] == 0x00 and b[3] == 0x01   # EI ACK cmd 0x0001
+        return False
+
+    return "generic_ack" if all(is_generic(p) for p in replies) else "typed"
+
+
+def _format_stall_report(cmds):
+    """Human-readable report naming the command the head unit is stalled waiting on a typed response
+    for. Printed live (silence watchdog) and mirrored to the txt log."""
+    lines = ["", "=" * 74,
+             ">>> STALL-COMMAND NAMER — head unit went silent after auth (SystemInit stalled).",
+             "    Per references/cr-v/IDPS_STATE_MAP.md the head unit runs a 21-state SystemInit",
+             "    sequence after MFi auth; its 'Ret/Return...Wait' states require a TYPED iAP1",
+             "    response, not the generic ACK we send. The last command we generic-ACKed below",
+             "    is the state to implement next.", ""]
+    if not cmds:
+        lines.append("    (no post-auth commands recorded — the stall is before SystemInit; the head")
+        lines.append("     unit went silent during IDPS/MFi auth, not in the SystemInit sequence.)")
+    else:
+        lines.append("    Post-auth commands, in order, and how we answered each:")
+        for i, c in enumerate(cmds):
+            flag = "  <-- generic ACK" if c["reply"] == "generic_ack" else ""
+            lines.append(f"      #{i} +{c['t']}s  lingo=0x{c['lingo']:02x} cmd=0x{c['cmd']:04x} "
+                         f"payload={c['payload']}  -> {c['reply']}{flag}")
+        stall = next((c for c in reversed(cmds) if c["reply"] == "generic_ack"), cmds[-1])
+        n_typed_needed = sum(1 for c in cmds if c["reply"] == "generic_ack")
+        lines += ["",
+                  f"    >>> STALL COMMAND: lingo=0x{stall['lingo']:02x} cmd=0x{stall['cmd']:04x} "
+                  f"payload={stall['payload']}",
+                  "    We answered it with a generic ACK; the head unit wants a specific typed",
+                  "    response and will not advance without it. Implement that response, re-run,",
+                  "    and this namer will point at the NEXT state.",
+                  f"    (typed-response states still owed this run: {n_typed_needed}; full ordered",
+                  "     list in SYSTEMINIT_TYPED_STATES / IDPS_STATE_MAP.md)"]
+    lines.append("=" * 74)
+    return "\n".join(lines)
+
+
 def _drain(harness, sock, rx_buf, conn_t0):
     """Parse and dispatch every complete packet currently in rx_buf."""
     progressed = True
@@ -790,13 +993,19 @@ def _drain(harness, sock, rx_buf, conn_t0):
             print(f"  [rx#{n} +{dt:5.1f}s] lingo=0x{lingo:02x} cmd=0x{cmd:02x} "
                   f"payload={payload.hex()}")
             _track_rx_phase(harness, lingo, cmd, payload)
-            for pkt in respond_to_packet(harness, hyp, lingo, cmd, payload):
+            replies = list(respond_to_packet(harness, hyp, lingo, cmd, payload))
+            for pkt in replies:
                 sock.send(pkt)
                 harness.log("tx", raw=pkt.hex(),
                             note=f"reply under {hyp.key}/{hyp.start_idps}/{hyp.sync}")
                 print(f"  [tx  ] {pkt.hex()}")
                 if iap.INTER_PACKET_DELAY_S:
                     time.sleep(iap.INTER_PACKET_DELAY_S)
+            # stall-command namer: record this command + how we answered it, then (re)arm the silence
+            # watchdog. Done BEFORE marking mfi_status_acked so the 0x18 auth packet itself is not
+            # counted as a SystemInit command (the gate in record_postauth keys off that mark).
+            harness.record_postauth(lingo, cmd, payload, _classify_reply(replies))
+            harness.arm_silence_watchdog()
             # We reply 0x19 (AckDevAuthStatus) to every 0x18 under init_auth — that is our side of
             # Layer-1 MFi auth completing. Mark it AFTER the reply is actually on the wire.
             if lingo == iap.LINGO_GENERAL and cmd == iap.CMD_RET_DEV_AUTHENTICATION_SIGNATURE \
