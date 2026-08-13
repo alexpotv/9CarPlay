@@ -735,6 +735,11 @@ EI_GET_RETURNS = {
     0x001c: (0x001d, b"\x00" * 9),   # GetPlayStatus  -> ReturnPlayStatus: stopped, no track
     0x002c: (0x002d, b"\x00"),        # GetShuffle     -> ReturnShuffle: off
     0x002f: (0x0030, b"\x00"),        # GetRepeat      -> ReturnRepeat: off
+    # ROUND 27 (appmode/8): answering the NowPlaying Gets pushed the head unit into the SystemInit DB
+    # states — it then sends GetNumberCategorizedDBRecords (EI 0x18, arg = a 1-byte category) and
+    # stalls on our ACK. State 14/16 (IDPS_STATE_MAP.md) read the returned count and ADVANCE when the
+    # running total is 0, so return count=0 (uint32). Fires for both the video and audio DB passes.
+    0x0018: (0x0019, struct.pack(">I", 0)),   # GetNumberCategorizedDBRecords -> Return…: count 0
 }
 
 
