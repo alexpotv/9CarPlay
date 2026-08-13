@@ -207,6 +207,31 @@ CMD_RET_FID_TOKEN_VALUE_ACKS = 0x3A  # iPod-to-Device: [transIdHi, transIdLo, nu
 CMD_END_IDPS = 0x3B                  # Device-to-iPod: [transIdHi, transIdLo, accEndIDPSStatus].
 CMD_IDPS_STATUS = 0x3C               # iPod-to-Device: [transIdHi, transIdLo, status].
 
+# ---- External-Accessory / app data sessions — spec General Lingo commands 0x3F-0x42. This is the
+# "iPhone OS application" feature the whole HondaLink path hinges on. The accessory (head unit)
+# declares its supported EA protocol strings + a per-protocol index in SetFIDTokenValues (see
+# parse_ea_protocols); when an app implementing one of those protocols opens an EASession, iOS sends
+# the accessory OpenDataSessionForProtocol(sessionId, protocolIndex) — this is what tells the head
+# unit "the app is installed and running" and is what makes it register the app (SetServerVRAppData)
+# instead of showing "app not installed / get it from the App Store". The Pi IS the phone, so we
+# synthesize this. Direction here (iPod->Device): confirmed by the firmware receive handler
+# ADCL_iAP1_AplReceiveOpenDataSessionForProtocol (NEventWatcher.exe, the head unit RECEIVING it from
+# the phone). See references/cr-v/WORKING_SEQUENCE.md "step A" + memory ROUND 29.
+CMD_OPEN_DATA_SESSION_FOR_PROTOCOL = 0x3F  # iPod-to-Device: [sessionIdHi, sessionIdLo, protocolIndex].
+CMD_CLOSE_DATA_SESSION = 0x40              # iPod-to-Device: [sessionIdHi, sessionIdLo].
+CMD_IPOD_DATA_TRANSFER = 0x41             # iPod-to-Device: [sessionIdHi, sessionIdLo, data...].
+CMD_ACCESSORY_DATA_TRANSFER = 0x42        # Device-to-iPod: [sessionIdHi, sessionIdLo, data...].
+
+# FID token identifiers for the EA-protocol declaration, decoded from the head unit's real
+# SetFIDTokenValues (appmode/8+/10). Each token is (infoByte1, infoByte2, data):
+#   (0x00, 0x04) EA Protocol   : data = [protocolIndex(1)][protocolString ASCII, null-terminated]
+#   (0x00, 0x05) BundleSeedID  : data = [seedId ASCII, null-terminated] — applies to the EA Protocol
+#                                token immediately preceding it (same app; the HondaLink app declares
+#                                BOTH 'jp.co.honda.rd.dispaudio.app.general' idx1 and '...hondalink'
+#                                idx2 under seed TX6J99784P).
+FID_TOKEN_EA_PROTOCOL = (0x00, 0x04)
+FID_TOKEN_BUNDLE_SEED_ID = (0x00, 0x05)
+
 # ---- Lingo capability discovery — spec Commands 0x4B/0x4C. Sent by the accessory once per Lingo
 # it's interested in (General, Simple Remote, Display Remote, ...), each on its own request/reply
 # — observed live 2026-08-10 immediately after IDPS+auth: the accessory retried this repeatedly
@@ -553,6 +578,37 @@ def build_ret_fid_token_value_acks(trans_id: int, token_fields) -> bytes:
     for info1, info2, _data in token_fields:
         payload += bytes([0x03, info1, info2, 0x00])
     return build_packet(LINGO_GENERAL, CMD_RET_FID_TOKEN_VALUE_ACKS, payload)
+
+
+def parse_ea_protocols(token_fields):
+    """From parsed SetFIDTokenValues fields, extract the accessory's declared External-Accessory
+    protocols. Returns a list of dicts {index, protocol, bundle_seed_id} in declaration order.
+
+    The accessory declares each EA protocol as an (0x00, 0x04) token whose data is
+    [protocolIndex(1)][protocolString, null-terminated], optionally followed by a (0x00, 0x05)
+    BundleSeedID token that applies to it. The protocolIndex is what OpenDataSessionForProtocol must
+    carry so the head unit maps the session back to the right app. Decoded from the CR-V head unit's
+    real tokens (memory ROUND 29): idx1 '...app.general', idx2 '...app.hondalink' (both seed
+    TX6J99784P = the HondaLink app), idx3 'com.pandora.link.v1' (seed 6KVQ6HHK5F)."""
+    protos = []
+    for info1, info2, data in token_fields:
+        if (info1, info2) == FID_TOKEN_EA_PROTOCOL and len(data) >= 2:
+            index = data[0]
+            protocol = data[1:].split(b"\x00", 1)[0].decode("ascii", "replace")
+            protos.append({"index": index, "protocol": protocol, "bundle_seed_id": None})
+        elif (info1, info2) == FID_TOKEN_BUNDLE_SEED_ID and protos:
+            seed = data.split(b"\x00", 1)[0].decode("ascii", "replace")
+            protos[-1]["bundle_seed_id"] = seed
+    return protos
+
+
+def build_open_data_session_for_protocol(session_id: int, protocol_index: int) -> bytes:
+    """OpenDataSessionForProtocol (General Lingo 0x3F, iPod->Device): announce to the accessory that
+    an app implementing the EA protocol at `protocol_index` has opened a data session `session_id`.
+    This is the message a real iPhone sends when a matching app launches; sending it ourselves is how
+    the Pi tells the head unit the HondaLink app is present (see CMD_OPEN_DATA_SESSION_FOR_PROTOCOL)."""
+    payload = bytes([(session_id >> 8) & 0xFF, session_id & 0xFF, protocol_index & 0xFF])
+    return build_packet(LINGO_GENERAL, CMD_OPEN_DATA_SESSION_FOR_PROTOCOL, payload)
 
 
 def build_idps_status(trans_id: int, status: int = 0x00) -> bytes:

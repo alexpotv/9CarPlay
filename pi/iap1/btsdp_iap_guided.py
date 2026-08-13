@@ -215,7 +215,9 @@ class Hypothesis:
                  cert_section_mode="accept_first", auth_transid=False, defer_challenge=False,
                  challenge_retry_byte=True, autoack_unknown=False,
                  ei_return_dbrecords=False, ei_return_cmd=0x2c, ei_return_count=0,
-                 ei_nowplaying_returns=False):
+                 ei_nowplaying_returns=False,
+                 ea_open_session=False, ea_open_protocols=("hondalink",),
+                 ea_open_trigger="device_info", ea_open_delay=2.0):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -274,6 +276,21 @@ class Hypothesis:
         # on: 0x1c GetPlayStatus, 0x2c GetShuffle, 0x2f GetRepeat are Gets that need typed Returns
         # (0x26 SetPlayStatusChangeNotification is a Set — ACK is correct). See EI_GET_RETURNS.
         self.ei_nowplaying_returns = ei_nowplaying_returns
+        # ea_open_session: STEP B (ROUND 29). After full iAP init the head unit runs RequestAutoStartApp
+        # and — finding no HondaLink app "present" — shows "app not installed / App Store". On a real
+        # iPhone the phone sends OpenDataSessionForProtocol (General Lingo 0x3F) when a matching app
+        # opens its EASession, which is what registers the app on the head unit. The Pi has no such app,
+        # so we synthesize that message: for each declared EA protocol whose string matches one of
+        # `ea_open_protocols`, send OpenDataSessionForProtocol(sessionId, protocolIndex) using the index
+        # the head unit assigned in its SetFIDTokenValues. `ea_open_trigger` picks WHEN:
+        #   "device_info" -> on the first General device-info request (0x07/0x0b/0x0d/0x09), i.e. right
+        #                    as the head unit is at the app-launch stage (closest wire signal).
+        #   "ei_mode"     -> a fixed `ea_open_delay`s after Extended-Interface mode begins (earlier;
+        #                    a fallback if device_info timing lands after the head unit already decided).
+        self.ea_open_session = ea_open_session
+        self.ea_open_protocols = tuple(ea_open_protocols)
+        self.ea_open_trigger = ea_open_trigger
+        self.ea_open_delay = ea_open_delay
 
 
 # ---------------------------------------------------------------------------------------------
@@ -381,22 +398,52 @@ class Hypothesis:
 # it drives the full iAP1-over-Bluetooth init the head unit requires and reaches the HondaLink
 # app-launch stage. History of the earlier probe hypotheses (Y1/Y2/Z1) lives in git + the memory log;
 # they've been removed so this just runs. To add a new probe, append another Hypothesis(...) here.
+# Base kwargs for the proven full-init sequence (Z2, the WORKING_SEQUENCE milestone). EA1/EA2 layer
+# the step-B app-presence emulation on top of exactly this.
+_FULL_INIT = dict(cert_section_mode="ack_transid", auth_transid=True,
+                  auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
+                  ei_nowplaying_returns=True)
+
 HYPOTHESES = [
     Hypothesis(
-        "Z2", "WORKING: full iAP init to the HondaLink app-launch stage",
+        "Z2", "CONTROL: full iAP init to the HondaLink app-launch stage",
         "The complete, RE-derived iAP1-over-BT init the head unit needs: proven MFi auth (transID'd "
         "cert->challenge->status), then it answers EVERY post-auth request the head unit's sequencer "
         "waits on — General device-info (name/version/model via REQUEST_HANDLERS), Extended-Interface "
         "NowPlaying Gets (0x1c GetPlayStatus->0x1d, 0x2c GetShuffle->0x2d, 0x2f GetRepeat->0x30, all "
         "empty/stopped) and DB-records (0x18 GetNumberCategorizedDBRecords->0x19 count=0), ACKing the "
         "Sets/EI setup. This carries the head unit through NowPlaying + SystemInit DB setup to the "
-        "point where it auto-launches the HondaLink app (RequestAutoStartApp).",
+        "point where it auto-launches the HondaLink app (RequestAutoStartApp). NO app emulation — the "
+        "control that reproduces the milestone.",
         "One clean connection attempt (no teardown/retry) that runs to the app-launch stage: on the "
         "screen, the 'app not installed / get it from the App Store' message (not a Bluetooth or "
         "'cannot launch' error). The namer names any NEW request if the head unit asks for more.",
-        cert_section_mode="ack_transid", auth_transid=True,
-        auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
-        ei_nowplaying_returns=True),
+        **_FULL_INIT),
+    Hypothesis(
+        "EA1", "STEP B: announce HondaLink app via OpenDataSessionForProtocol (hondalink idx2)",
+        "Z2's full init PLUS the step-B app-presence emulation: when the head unit reaches the "
+        "app-launch stage (first General device-info request), the Pi sends OpenDataSessionForProtocol "
+        "(General Lingo 0x3F) for the EA protocol 'jp.co.honda.rd.dispaudio.app.hondalink' (index 0x02, "
+        "read live from the head unit's own SetFIDTokenValues). On a real iPhone this is the message "
+        "iOS sends when the HondaLink app opens its EASession; it is what makes the head unit register "
+        "the app (SetServerVRAppData) instead of declaring it missing. Since the Pi controls the phone "
+        "side, we synthesize it.",
+        "The 'app not installed / App Store' message does NOT appear (or changes). Best case: the head "
+        "unit registers the app and DIALS av1/av2 (av_inbound_dial) and/or sends a new app-launch / "
+        "OpenDataSession response / RequestIAppLaunch command. Any change vs Z2 is signal — the namer "
+        "and phase checklist capture whatever the head unit does next.",
+        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
+        **_FULL_INIT),
+    Hypothesis(
+        "EA2", "STEP B: announce BOTH HondaLink EA protocols (general idx1 + hondalink idx2)",
+        "Same as EA1, but opens data sessions for BOTH of the HondaLink app's declared protocols — "
+        "'...app.general' (index 0x01) and '...app.hondalink' (index 0x02) — since the app declares "
+        "both under the same bundle seed (TX6J99784P) and the head unit may want the pair before it "
+        "treats the app as fully present.",
+        "As EA1. If EA1 alone didn't satisfy the head unit but EA2 does, the head unit needed the full "
+        "protocol set announced, not just the hondalink one.",
+        ea_open_session=True, ea_open_protocols=("general", "hondalink"),
+        ea_open_trigger="device_info", **_FULL_INIT),
 ]
 
 
@@ -432,6 +479,7 @@ _PHASE_DESC = dict(PHASE_CHAIN)
 # non-chain markers (diagnostic flags, not linear milestones)
 _PHASE_DESC["mfi_auth_reloop"] = "head unit re-sent 0x15 after our 0x19 (MFi auth not accepted)"
 _PHASE_DESC["stalled_awaiting_av_dial"] = "EI reached but no av1/av2 dial within the wait window"
+_PHASE_DESC["ea_open_sent"] = "we sent OpenDataSessionForProtocol announcing the HondaLink app (step B)"
 STALL_AWAIT_AV_S = 12.0   # after EI mode, how long we wait for the head unit to dial av1/av2
 STALL_SILENCE_S = 6.0     # post-auth: how long the head unit must go silent before we name the
                           # command it's stuck on (its retry unit is ~6s; normal gaps are sub-second)
@@ -513,6 +561,10 @@ class Harness:
         self.connected = False
         self.head_unit_bdaddr = None     # learned from the inbound iAP connection (device path)
         self.av_out_started = False      # guards the one-shot outbound AV connect (CHANGE 2)
+        # ---- step-B EA app-session state (per-window) ----
+        self.iap_sock = None             # the live iAP RFCOMM socket, for out-of-band sends (EA open)
+        self.ea_protocols = []           # EA protocols the head unit declared in SetFIDTokenValues
+        self.ea_opened = False           # one-shot guard: OpenDataSessionForProtocol already sent
         # ---- phase instrumentation (per-window) ----
         self.local_bdaddr = None         # this adapter's BD address (set once at startup)
         self.conn_t0 = None              # wall clock of the current iAP connection start
@@ -550,6 +602,8 @@ class Harness:
             self.rx_counts = {}
             self.phases = {}
             self.postauth_cmds = []
+            self.ea_protocols = []
+            self.ea_opened = False
             self._stall_reported = False
             if self._silence_timer:
                 self._silence_timer.cancel()
@@ -611,6 +665,38 @@ class Harness:
             if self._silence_timer:
                 self._silence_timer.cancel()
                 self._silence_timer = None
+
+    # ---- step-B EA app-session emulation -----------------------------------------
+    def take_ea_open_packets(self, hyp):
+        """One-shot: build the OpenDataSessionForProtocol packet(s) for the EA protocol(s) this
+        hypothesis targets, using the indices the head unit declared (stored from SetFIDTokenValues).
+        Returns [] if already sent, not enabled, or no matching protocol was declared. Assigns a
+        fresh session id per opened protocol. Logged so the run shows exactly what we announced."""
+        with self.lock:
+            if self.ea_opened or not hyp.ea_open_session:
+                return []
+            protos = list(self.ea_protocols)
+            if not protos:
+                return []
+            self.ea_opened = True
+        pkts, opened = [], []
+        session_id = 1
+        for want in hyp.ea_open_protocols:
+            for p in protos:
+                if want.lower() in p["protocol"].lower():
+                    pkts.append(iap.build_open_data_session_for_protocol(session_id, p["index"]))
+                    opened.append({"session_id": session_id, "index": p["index"],
+                                   "protocol": p["protocol"], "bundle_seed_id": p["bundle_seed_id"]})
+                    session_id += 1
+                    break
+        if opened:
+            self.log("note", event="ea_open_session", opened=opened)
+            self.mark_phase("ea_open_sent", opened=opened)
+            names = ", ".join(f"{o['protocol']}(idx{o['index']},sess{o['session_id']})" for o in opened)
+            print(f"  [ea-open] announcing HondaLink app via OpenDataSessionForProtocol: {names}")
+        else:
+            print(f"  [ea-open] no declared EA protocol matched {hyp.ea_open_protocols} — nothing sent")
+        return pkts
 
     def _report_stall(self, window_at_arm):
         with self.lock:
@@ -677,6 +763,15 @@ class Harness:
         # pre-idps_end gap is the two-attempt btmon stitching artifact (ROUND 20), NOT a real IDPS
         # failure — so only treat a nonzero accEndIDPSStatus as fatal if we never got past auth.
         if has("ei_mode") or has("mfi_status_acked"):
+            if has("ea_open_sent"):
+                return ("STEP B: full iAP init reached, AND we announced the HondaLink app via "
+                        "OpenDataSessionForProtocol. Now read the SCREEN + phase checklist: if the "
+                        "'app not installed / App Store' message is GONE, or 'av_inbound_dial' is ticked "
+                        "(head unit dialed av1/av2), or a NEW app-launch/OpenDataSession-response command "
+                        "appears, the announce WORKED — proceed to the AppMode DataParts handshake "
+                        "(0xB1/0xB2/0xB3) on av1/av2. If the message is unchanged, the head unit wants "
+                        "more than the session-open (e.g. an app-launch reply, or a different trigger/"
+                        "timing) — the namer/log shows what it did after our announce.")
             return ("Post-auth iAP init reached EI mode. If the STALL COMMAND line above shows a command "
                     "we generic-ACKed, that's the next request owed a typed reply (answer it, then re-run). "
                     "If every post-auth command got a TYPED reply and the head unit still stopped, we have "
@@ -772,6 +867,16 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
     if hyp.run_idps_body and cmd == iap.CMD_SET_FID_TOKEN_VALUES:
         trans_id, fields = iap.parse_fid_token_values(payload)
         out.append(iap.build_ret_fid_token_value_acks(trans_id, fields))
+        # STEP B: stash the accessory's declared EA protocols (index<->string) so we can later send
+        # OpenDataSessionForProtocol with the right index to announce the HondaLink app is present.
+        eaps = iap.parse_ea_protocols(fields)
+        if eaps:
+            harness.ea_protocols = eaps
+            harness.log("note", event="ea_protocols_declared", protocols=eaps)
+            print("  [ea] head unit declared EA protocols: "
+                  + ", ".join(f"{p['protocol']}(idx{p['index']}"
+                              + (f",seed={p['bundle_seed_id']}" if p['bundle_seed_id'] else "") + ")"
+                              for p in eaps))
         # Round 3: the head unit goes silent ~18s after this ACK before finalizing IDPS with a
         # failure. If it's waiting for the iPod to start authenticating the accessory, initiate that
         # now (inside the window) rather than waiting for an EndIDPS success that never comes.
@@ -857,6 +962,11 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
         return out
     if cmd in iap.REQUEST_HANDLERS:
         out.append(iap.REQUEST_HANDLERS[cmd]())
+        # STEP B (trigger="device_info"): the head unit requests iPod name/serial/model/version right
+        # as it enters RequestAutoStartApp — the closest wire signal to the app-launch decision. Ride
+        # that moment to announce the HondaLink app via OpenDataSessionForProtocol (one-shot).
+        if hyp.ea_open_session and hyp.ea_open_trigger == "device_info":
+            out.extend(harness.take_ea_open_packets(hyp))
         return out
     if cmd == iap.CMD_UNKNOWN_0X11:
         # The head unit's iPod-options request (firmware receives "RetiPodOutOption" in reply). How
@@ -891,6 +1001,7 @@ def rfcomm_session(harness, fd, device):
     sock = socket.fromfd(fd, socket.AF_BLUETOOTH, socket.SOCK_STREAM)
     sock.setblocking(True)
     harness.connected = True
+    harness.iap_sock = sock          # expose for out-of-band sends (step-B EA open on a timer)
     harness.head_unit_bdaddr = _bdaddr_from_device_path(device)
     conn_t0 = time.time()   # per-connection clock, so the operator can watch step latency live
     harness.conn_t0 = conn_t0
@@ -913,6 +1024,7 @@ def rfcomm_session(harness, fd, device):
             _drain(harness, sock, rx_buf, conn_t0)
     finally:
         harness.connected = False
+        harness.iap_sock = None
         # If the head unit tore the connection down while stalled (never dialed av1/av2), name the
         # stall command now — the teardown IS the stall on this head unit (it retries the whole
         # connection). Fires only if the silence watchdog hasn't already reported.
@@ -966,13 +1078,21 @@ def _track_rx_phase(harness, lingo, cmd, payload):
             harness.mark_phase("mfi_signature")
         elif cmd == CMD_ENTER_EI:                              # 0x05
             if harness.mark_phase("ei_mode", via="cmd_0x05"):
-                threading.Timer(STALL_AWAIT_AV_S, _av_dial_watchdog,
-                                args=(harness, harness.window_id)).start()
+                _on_ei_mode(harness)
     elif lingo == iap.LINGO_EXTENDED_INTERFACE:
         # any Extended-Interface (lingo 0x04) packet also proves the head unit is in EI mode
         if harness.mark_phase("ei_mode", via="lingo_0x04"):
-            threading.Timer(STALL_AWAIT_AV_S, _av_dial_watchdog,
-                            args=(harness, harness.window_id)).start()
+            _on_ei_mode(harness)
+
+
+def _on_ei_mode(harness):
+    """First entry into Extended-Interface mode: arm the av-dial watchdog and, for a hypothesis using
+    the 'ei_mode' EA trigger, schedule the OpenDataSessionForProtocol announce."""
+    threading.Timer(STALL_AWAIT_AV_S, _av_dial_watchdog,
+                    args=(harness, harness.window_id)).start()
+    hyp = harness.current
+    if hyp.ea_open_session and hyp.ea_open_trigger == "ei_mode":
+        threading.Timer(hyp.ea_open_delay, send_ea_open, args=(harness, hyp)).start()
 
 
 def _classify_reply(replies):
@@ -1128,6 +1248,9 @@ def operator_console(harness):
               f"force_idps_success={hyp.force_idps_success}  cert_section={hyp.cert_section_mode}")
         print(f"                  auth_transid={hyp.auth_transid}  defer_challenge={hyp.defer_challenge}  "
               f"autoack_unknown={hyp.autoack_unknown}")
+        if hyp.ea_open_session:
+            print(f"                  ea_open_session=ON  protocols={hyp.ea_open_protocols}  "
+                  f"trigger={hyp.ea_open_trigger}")
         cmd = _ask("\n  Press Enter to ARM this hypothesis (or s/r/q): ").lower()
         if cmd == "q":
             break
@@ -1145,7 +1268,9 @@ def operator_console(harness):
                     other_lingo_options=hyp.other_lingo_options, echo_transid=hyp.echo_transid,
                     auth_trigger=hyp.auth_trigger, force_idps_success=hyp.force_idps_success,
                     cert_section_mode=hyp.cert_section_mode, auth_transid=hyp.auth_transid,
-                    defer_challenge=hyp.defer_challenge, autoack_unknown=hyp.autoack_unknown)
+                    defer_challenge=hyp.defer_challenge, autoack_unknown=hyp.autoack_unknown,
+                    ea_open_session=hyp.ea_open_session, ea_open_protocols=list(hyp.ea_open_protocols),
+                    ea_open_trigger=hyp.ea_open_trigger)
         print(f"\n  >>> ARMED ({hyp.key}). Now LAUNCH HondaLink on the head unit and watch it.")
         print("      (If it's already open, back out and re-enter the HondaLink source to force a")
         print("       fresh connection.) Live rx/tx traffic prints below as it happens.")
@@ -1287,6 +1412,24 @@ def _av_out_session(harness, bdaddr, tag, channel):
         harness.log("note", event="av_out_closed", channel=tag)
         print(f"[av-out {tag}] closed")
         sock.close()
+
+
+def send_ea_open(harness, hyp):
+    """STEP B: send the OpenDataSessionForProtocol packet(s) for this hypothesis over the live iAP
+    socket (used by the 'ei_mode' trigger's timer; the 'device_info' trigger appends them inline in
+    respond_to_packet instead). One-shot via take_ea_open_packets' guard."""
+    pkts = harness.take_ea_open_packets(hyp)
+    sock = harness.iap_sock
+    if not pkts or sock is None:
+        return
+    for pkt in pkts:
+        try:
+            sock.send(pkt)
+        except OSError as e:
+            harness.log("note", event="ea_open_send_failed", error=str(e))
+            return
+        harness.log("tx", raw=pkt.hex(), note=f"ea_open under {hyp.key}")
+        print(f"  [tx  ] {pkt.hex()}  (OpenDataSessionForProtocol)")
 
 
 def connect_head_unit_av(harness):
