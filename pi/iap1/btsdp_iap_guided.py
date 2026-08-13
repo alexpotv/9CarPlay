@@ -377,52 +377,23 @@ class Hypothesis:
 # Round 8/9: walk the Extended Interface / iPod-Out setup AND accept the AV/data SPP channel the head
 # unit opens afterward (AV_DATA_UUIDS). Success = the "cannot connect via Bluetooth" error is gone and
 # a [datachan] connection appears carrying the app AV/data protocol (logged raw for analysis).
+# Single working hypothesis. Z2 is the MILESTONE sequence (see references/cr-v/WORKING_SEQUENCE.md):
+# it drives the full iAP1-over-Bluetooth init the head unit requires and reaches the HondaLink
+# app-launch stage. History of the earlier probe hypotheses (Y1/Y2/Z1) lives in git + the memory log;
+# they've been removed so this just runs. To add a new probe, append another Hypothesis(...) here.
 HYPOTHESES = [
     Hypothesis(
-        "Y1", "Walk General + Extended Interface post-auth phases (auto-ACK both)",
-        "Full auth (proven W1 path) + autoack_unknown, now covering BOTH General Lingo (0x4f/0x24/"
-        "0x05...) and Extended Interface Lingo (0x04, 2-byte commands). transID-ACK everything to "
-        "walk the iPod-Out UI/DB setup as far as it will go and capture the full command sequence.",
-        "The head unit advances through a run of EI commands (SetUIMode / ResetDBHierarchy / "
-        "GetNumberCategorizedDBRecords / Enter-ExitExtendedInterfaceMode); each cmd id + payload is "
-        "logged. Any that keep retrying every ~18s want a DATA reply, not an ACK — noted for next round.",
-        cert_section_mode="ack_transid", auth_transid=True,
-        auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True),
-
-    Hypothesis(
-        "Y2", "Control: complete auth, then STOP (no post-auth auto-ACK at all)",
-        "auth completes but we answer nothing after 0x19. Confirms we still reliably reach the "
-        "post-auth phase (cmd 0x4f) as the baseline for the Y1 walk.",
-        "Auth completes (0x18 -> 0x19), cmd 0x4f arrives, then silence.",
-        cert_section_mode="ack_transid", auth_transid=True,
-        auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=False),
-
-    Hypothesis(
-        "Z1", "EXPERIMENTAL: typed ReturnNumberCategorizedDBRecords for EI 0x2c",
-        "Same proven path as Y1 (full auth + EI-ACK walk), but for the LAST Extended-Interface "
-        "command (0x2c, where Y1 goes silent) reply with a typed ReturnNumberCategorizedDBRecords "
-        "(EI cmd 0x0019, payload=transID+uint32 count=0) instead of an EI ACK. Per the RE'd "
-        "SystemInit state machine (IDPS_STATE_MAP.md states 13-16) the head unit needs a record "
-        "COUNT here to advance toward StartBluetoothConnectionUpdate. Unverified opcode/format — "
-        "arm Y1 first for the namer baseline, then Z1 to test this.",
-        "The head unit does NOT go silent after 0x2c — it sends a further command (states 15-20: "
-        "ResetDBHierarchy audio / Exit EI / Bluetooth connection) OR finally dials av1/av2 "
-        "(av_inbound_dial). Any change from Y1's post-0x2c silence is signal.",
-        cert_section_mode="ack_transid", auth_transid=True,
-        auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
-        ei_return_dbrecords=True, ei_return_cmd=0x2c, ei_return_count=0),
-
-    Hypothesis(
-        "Z2", "NowPlaying EI Returns: answer GetPlayStatus/Shuffle/Repeat (empty/stopped)",
-        "Same proven path as Y1 (full auth + EI-ACK walk), PLUS real iAP1 EI Return responses for the "
-        "post-EI NowPlaying Get burst the head unit stalls on — Ghidra-confirmed (ROUND 26): 0x1c "
-        "GetPlayStatus->ReturnPlayStatus(0x1d, stopped/no-track, 9B), 0x2c GetShuffle->ReturnShuffle"
-        "(0x2d, off), 0x2f GetRepeat->ReturnRepeat(0x30, off). 0x26 SetPlayStatusChangeNotification "
-        "keeps the ACK (it's a Set). Goal: let the NowPlaying/SystemInit sequencer COMPLETE so the "
-        "head unit fires NotifyInitialize -> sets m_pAuthInfo (+0x430) -> dials av1/av2.",
-        "The head unit does NOT go silent after 0x2c — it advances (sends further NowPlaying Gets like "
-        "GetCurrentPlayingTrackIndex/GetNumPlayingTracks, or Exit-EI), OR dials av1/av2 (av_inbound_"
-        "dial). The namer will name any NEW stall command to answer next.",
+        "Z2", "WORKING: full iAP init to the HondaLink app-launch stage",
+        "The complete, RE-derived iAP1-over-BT init the head unit needs: proven MFi auth (transID'd "
+        "cert->challenge->status), then it answers EVERY post-auth request the head unit's sequencer "
+        "waits on — General device-info (name/version/model via REQUEST_HANDLERS), Extended-Interface "
+        "NowPlaying Gets (0x1c GetPlayStatus->0x1d, 0x2c GetShuffle->0x2d, 0x2f GetRepeat->0x30, all "
+        "empty/stopped) and DB-records (0x18 GetNumberCategorizedDBRecords->0x19 count=0), ACKing the "
+        "Sets/EI setup. This carries the head unit through NowPlaying + SystemInit DB setup to the "
+        "point where it auto-launches the HondaLink app (RequestAutoStartApp).",
+        "One clean connection attempt (no teardown/retry) that runs to the app-launch stage: on the "
+        "screen, the 'app not installed / get it from the App Store' message (not a Bluetooth or "
+        "'cannot launch' error). The namer names any NEW request if the head unit asks for more.",
         cert_section_mode="ack_transid", auth_transid=True,
         auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
         ei_nowplaying_returns=True),
@@ -706,12 +677,13 @@ class Harness:
         # pre-idps_end gap is the two-attempt btmon stitching artifact (ROUND 20), NOT a real IDPS
         # failure — so only treat a nonzero accEndIDPSStatus as fatal if we never got past auth.
         if has("ei_mode") or has("mfi_status_acked"):
-            return ("SystemInit stall (post-auth): IDPS + MFi auth completed and we reached EI mode, but "
-                    "the head unit never dialed av1/av2 and the connection ended. Per the RE'd SystemInit "
-                    "state machine (references/cr-v/IDPS_STATE_MAP.md) it needs TYPED responses at the "
-                    "'Ret/Return...Wait' states we blanket-ACK. See the STALL COMMAND line above for the "
-                    "exact command owed a typed response. (An outbound-dial 'Bluetooth error' on screen is "
-                    "our CHANGE-2 av dial being reset — a symptom of the session ending, not the cause.)")
+            return ("Post-auth iAP init reached EI mode. If the STALL COMMAND line above shows a command "
+                    "we generic-ACKed, that's the next request owed a typed reply (answer it, then re-run). "
+                    "If every post-auth command got a TYPED reply and the head unit still stopped, we have "
+                    "run the full init to the HondaLink APP-LAUNCH stage (RequestAutoStartApp): the screen "
+                    "should show 'app not installed / App Store'. That is the milestone — the next gate is "
+                    "the HondaLink app itself (EA/OpenDataSessionForProtocol + AppMode DataParts over "
+                    "av1/av2), NOT more iAP init. See references/cr-v/WORKING_SEQUENCE.md + AppMode.md.")
         idps = reached.get("idps_end")
         if idps is not None and idps.get("accEndIDPSStatus") not in (0, None):
             st = idps.get("accEndIDPSStatus")
