@@ -44,8 +44,10 @@ Hand those two files back for analysis.
 import datetime
 import json
 import os
+import re
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -212,7 +214,8 @@ class Hypothesis:
                  echo_transid=True, auth_trigger="after_endidps", force_idps_success=False,
                  cert_section_mode="accept_first", auth_transid=False, defer_challenge=False,
                  challenge_retry_byte=True, autoack_unknown=False,
-                 ei_return_dbrecords=False, ei_return_cmd=0x2c, ei_return_count=0):
+                 ei_return_dbrecords=False, ei_return_cmd=0x2c, ei_return_count=0,
+                 ei_nowplaying_returns=False):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -265,6 +268,12 @@ class Hypothesis:
         self.ei_return_dbrecords = ei_return_dbrecords
         self.ei_return_cmd = ei_return_cmd
         self.ei_return_count = ei_return_count
+        # ei_nowplaying_returns: ROUND 26. Answer the head unit's Extended-Interface NowPlaying Get
+        # commands with real (empty/stopped) iAP1 EI *Return* responses instead of a generic EI ACK.
+        # RE (Ghidra, NEventWatcher ADCL) identified the post-EI burst the head unit sends and stalls
+        # on: 0x1c GetPlayStatus, 0x2c GetShuffle, 0x2f GetRepeat are Gets that need typed Returns
+        # (0x26 SetPlayStatusChangeNotification is a Set — ACK is correct). See EI_GET_RETURNS.
+        self.ei_nowplaying_returns = ei_nowplaying_returns
 
 
 # ---------------------------------------------------------------------------------------------
@@ -402,6 +411,21 @@ HYPOTHESES = [
         cert_section_mode="ack_transid", auth_transid=True,
         auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
         ei_return_dbrecords=True, ei_return_cmd=0x2c, ei_return_count=0),
+
+    Hypothesis(
+        "Z2", "NowPlaying EI Returns: answer GetPlayStatus/Shuffle/Repeat (empty/stopped)",
+        "Same proven path as Y1 (full auth + EI-ACK walk), PLUS real iAP1 EI Return responses for the "
+        "post-EI NowPlaying Get burst the head unit stalls on — Ghidra-confirmed (ROUND 26): 0x1c "
+        "GetPlayStatus->ReturnPlayStatus(0x1d, stopped/no-track, 9B), 0x2c GetShuffle->ReturnShuffle"
+        "(0x2d, off), 0x2f GetRepeat->ReturnRepeat(0x30, off). 0x26 SetPlayStatusChangeNotification "
+        "keeps the ACK (it's a Set). Goal: let the NowPlaying/SystemInit sequencer COMPLETE so the "
+        "head unit fires NotifyInitialize -> sets m_pAuthInfo (+0x430) -> dials av1/av2.",
+        "The head unit does NOT go silent after 0x2c — it advances (sends further NowPlaying Gets like "
+        "GetCurrentPlayingTrackIndex/GetNumPlayingTracks, or Exit-EI), OR dials av1/av2 (av_inbound_"
+        "dial). The namer will name any NEW stall command to answer next.",
+        cert_section_mode="ack_transid", auth_transid=True,
+        auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
+        ei_nowplaying_returns=True),
 ]
 
 
@@ -462,13 +486,43 @@ SYSTEMINIT_TYPED_STATES = [
 ]
 
 
+def _valid_bd(a):
+    return a if (a and len(a) == 17 and a.count(":") == 5 and a != "00:00:00:00:00:00") else None
+
+
 def _read_local_bdaddr(index=0):
-    """Local adapter BD address (e.g. 'DC:A6:32:..'), or None. Dependency-free (sysfs)."""
+    """Local adapter BD address (e.g. 'DC:A6:32:..'), or None. Tries sysfs for hci<index>, then any
+    /sys/class/bluetooth/*/address, then `hciconfig`, then BlueZ D-Bus Adapter1.Address — the plain
+    hci0 sysfs read returned None on the Pi (appmode/5-7), and we need this to check the BDaddr guard."""
+    import glob
     try:
         with open(f"/sys/class/bluetooth/hci{index}/address") as fh:
-            a = fh.read().strip().upper()
-        return a if len(a) == 17 and a.count(":") == 5 else None
+            a = _valid_bd(fh.read().strip().upper())
+        if a:
+            return a
     except OSError:
+        pass
+    for path in sorted(glob.glob("/sys/class/bluetooth/*/address")):
+        try:
+            with open(path) as fh:
+                a = _valid_bd(fh.read().strip().upper())
+            if a:
+                return a
+        except OSError:
+            continue
+    try:
+        out = subprocess.run(["hciconfig", f"hci{index}"], capture_output=True, text=True, timeout=3).stdout
+        m = re.search(r"BD Address:\s*([0-9A-Fa-f:]{17})", out)
+        if m:
+            return _valid_bd(m.group(1).upper())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        bus = dbus.SystemBus()
+        props = dbus.Interface(bus.get_object("org.bluez", f"/org/bluez/hci{index}"),
+                               "org.freedesktop.DBus.Properties")
+        return _valid_bd(str(props.Get("org.bluez.Adapter1", "Address")).upper())
+    except Exception:
         return None
 
 
@@ -625,10 +679,12 @@ class Harness:
         # stall-command namer: the last post-auth command we generic-ACKed is the SystemInit state
         # whose typed response we still owe (see references/cr-v/IDPS_STATE_MAP.md).
         if postauth and "av_inbound_dial" not in reached:
-            stall = next((c for c in reversed(postauth) if c["reply"] == "generic_ack"), postauth[-1])
-            lines.append(f"    >> STALL COMMAND (owe a typed response): lingo=0x{stall['lingo']:02x} "
+            stall = postauth[-1]   # last command before silence, regardless of reply type
+            tail = (" (typed reply here didn't help -> stall is DOWNSTREAM: av1/av2 dial / AppMode)"
+                    if stall["reply"] == "typed" else "")
+            lines.append(f"    >> LAST CMD BEFORE SILENCE: lingo=0x{stall['lingo']:02x} "
                          f"cmd=0x{stall['cmd']:04x} payload={stall['payload']} "
-                         f"[we answered: {stall['reply']}]  ({len(postauth)} post-auth cmd(s) seen)")
+                         f"[we answered: {stall['reply']}]  ({len(postauth)} post-auth cmd(s) seen){tail}")
         return "\n".join(lines), self._interpret(reached)
 
     @staticmethod
@@ -646,25 +702,40 @@ class Harness:
             return ("MFi auth is LOOPING (head unit re-sent 0x15 after our 0x19) -> it did NOT accept the "
                     "authentication -> m_pAuthInfo stays NULL -> NotifyStartSmartPhoneApps bails. "
                     "FIX TARGET: Layer-1 MFi auth completion (challenge/status handling).")
+        # NOTE: reaching EI mode PROVES IDPS + MFi auth succeeded. accEndIDPSStatus=0x01 with a big
+        # pre-idps_end gap is the two-attempt btmon stitching artifact (ROUND 20), NOT a real IDPS
+        # failure — so only treat a nonzero accEndIDPSStatus as fatal if we never got past auth.
+        if has("ei_mode") or has("mfi_status_acked"):
+            return ("SystemInit stall (post-auth): IDPS + MFi auth completed and we reached EI mode, but "
+                    "the head unit never dialed av1/av2 and the connection ended. Per the RE'd SystemInit "
+                    "state machine (references/cr-v/IDPS_STATE_MAP.md) it needs TYPED responses at the "
+                    "'Ret/Return...Wait' states we blanket-ACK. See the STALL COMMAND line above for the "
+                    "exact command owed a typed response. (An outbound-dial 'Bluetooth error' on screen is "
+                    "our CHANGE-2 av dial being reset — a symptom of the session ending, not the cause.)")
         idps = reached.get("idps_end")
         if idps is not None and idps.get("accEndIDPSStatus") not in (0, None):
             st = idps.get("accEndIDPSStatus")
-            return (f"*** IDPS FAILED (accEndIDPSStatus=0x{st:02x}) — THE UPSTREAM WALL. *** The head unit "
-                    f"went silent after we ACKed its SetFIDTokenValues (see the large pre-idps_end gap), "
-                    f"then ended IDPS with failure. The MFi auth + EI mode that follow are post-fail "
-                    f"recovery, so AppMode never activates and av1/av2 is never dialed. FIX HERE FIRST: "
-                    f"the head unit is not accepting our post-SetFIDTokenValues handling. Suspect our "
-                    f"premature mid-IDPS GetDevAuthInfo(0x14) and/or the RetFIDTokenValueACKs semantics — "
-                    f"goal is EndIDPS returning accEndIDPSStatus=0x00.")
-        if has("ei_mode") or has("mfi_status_acked"):
-            return ("STALL between iAP-auth and the AppMode AV dial: reached EI-mode / auth-complete but "
-                    "the head unit never dialed av1/av2. => a NotifyStartSmartPhoneApps guard fails "
-                    "(m_pAuthInfo or BDaddr). Cross-check the logged local_bdaddr against the address the "
-                    "head unit paired with; if it matches, the next fix target is what sets m_pAuthInfo "
-                    "(NotifyIOSAuthEvent 'AppMode Active').")
+            return (f"Stalled in IDPS/auth (never reached EI mode); last EndIDPS accEndIDPSStatus=0x{st:02x}. "
+                    f"Layer-1 identification/auth did not complete this window.")
         if has("idps_end") or has("mfi_signature"):
             return ("Stalled during IDPS/MFi auth (never reached EI mode). Layer-1 auth did not complete.")
         return "Stalled early in IDPS — head unit did not finish identification."
+
+
+# Extended-Interface NowPlaying Get -> (Return opcode, empty/stopped data) — confirmed by Ghidra RE of
+# NEventWatcher's ADCL senders + response parsers (ROUND 26, memory + IDPS_STATE_MAP.md):
+#   0x1c GetPlayStatus -> 0x1d ReturnPlayStatus  [uint32 trackLen][uint32 trackPos][uint8 state] (9B);
+#        state 0x00 = stopped (AplReceiveReturnPlayStatus FUN_002615ec parses exactly 4+4+1 bytes).
+#   0x2c GetShuffle    -> 0x2d ReturnShuffle  [uint8 mode]  (0x00 = off)
+#   0x2f GetRepeat     -> 0x30 ReturnRepeat   [uint8 mode]  (0x00 = off)
+# Wire payload for each = the request's 2-byte transID (echoed) + the data bytes above. Only fires on
+# the matching received Get, so entries for Gets the head unit doesn't send are harmless. 0x26
+# SetPlayStatusChangeNotification is a Set and keeps the generic EI ACK (iPodAck 0x0001).
+EI_GET_RETURNS = {
+    0x001c: (0x001d, b"\x00" * 9),   # GetPlayStatus  -> ReturnPlayStatus: stopped, no track
+    0x002c: (0x002d, b"\x00"),        # GetShuffle     -> ReturnShuffle: off
+    0x002f: (0x0030, b"\x00"),        # GetRepeat      -> ReturnRepeat: off
+}
 
 
 def build_ei_packet(cmd16, payload):
@@ -698,6 +769,12 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
         # the generic EI ACK — the head unit needs a record COUNT to advance (IDPS_STATE_MAP.md).
         if hyp.ei_return_dbrecords and cmd == hyp.ei_return_cmd:
             out.append(build_ei_packet(0x0019, trans_id + struct.pack(">I", hyp.ei_return_count)))
+            return out
+        # ROUND 26: answer the NowPlaying Get burst (0x1c/0x2c/0x2f) with typed empty/stopped Returns
+        # so the head unit's EI/NowPlaying sequencer can complete (-> init-complete -> AppMode dial).
+        if hyp.ei_nowplaying_returns and cmd in EI_GET_RETURNS:
+            ret_cmd, data = EI_GET_RETURNS[cmd]
+            out.append(build_ei_packet(ret_cmd, trans_id + data))
             return out
         if hyp.autoack_unknown:
             out.append(build_ei_packet(0x0001, trans_id + bytes([0x00, (cmd >> 8) & 0xFF, cmd & 0xFF])))
@@ -946,11 +1023,11 @@ def _format_stall_report(cmds):
     """Human-readable report naming the command the head unit is stalled waiting on a typed response
     for. Printed live (silence watchdog) and mirrored to the txt log."""
     lines = ["", "=" * 74,
-             ">>> STALL-COMMAND NAMER — head unit went silent after auth (SystemInit stalled).",
-             "    Per references/cr-v/IDPS_STATE_MAP.md the head unit runs a 21-state SystemInit",
-             "    sequence after MFi auth; its 'Ret/Return...Wait' states require a TYPED iAP1",
-             "    response, not the generic ACK we send. The last command we generic-ACKed below",
-             "    is the state to implement next.", ""]
+             ">>> STALL-COMMAND NAMER — head unit went silent after auth.",
+             "    The head unit drives a post-auth iAP/EI setup (see references/cr-v/IDPS_STATE_MAP.md).",
+             "    Below is every post-auth command and how we answered it; the LAST one before silence",
+             "    is the stall point. If we already sent it a TYPED response and it still stalled, the",
+             "    block is downstream (av1/av2 dial / AppMode), not that command.", ""]
     if not cmds:
         lines.append("    (no post-auth commands recorded — the stall is before SystemInit; the head")
         lines.append("     unit went silent during IDPS/MFi auth, not in the SystemInit sequence.)")
@@ -960,16 +1037,24 @@ def _format_stall_report(cmds):
             flag = "  <-- generic ACK" if c["reply"] == "generic_ack" else ""
             lines.append(f"      #{i} +{c['t']}s  lingo=0x{c['lingo']:02x} cmd=0x{c['cmd']:04x} "
                          f"payload={c['payload']}  -> {c['reply']}{flag}")
-        stall = next((c for c in reversed(cmds) if c["reply"] == "generic_ack"), cmds[-1])
-        n_typed_needed = sum(1 for c in cmds if c["reply"] == "generic_ack")
+        # The stall is at the LAST command before silence, regardless of how we answered it.
+        stall = cmds[-1]
         lines += ["",
-                  f"    >>> STALL COMMAND: lingo=0x{stall['lingo']:02x} cmd=0x{stall['cmd']:04x} "
-                  f"payload={stall['payload']}",
-                  "    We answered it with a generic ACK; the head unit wants a specific typed",
-                  "    response and will not advance without it. Implement that response, re-run,",
-                  "    and this namer will point at the NEXT state.",
-                  f"    (typed-response states still owed this run: {n_typed_needed}; full ordered",
-                  "     list in SYSTEMINIT_TYPED_STATES / IDPS_STATE_MAP.md)"]
+                  f"    >>> LAST COMMAND BEFORE SILENCE: lingo=0x{stall['lingo']:02x} "
+                  f"cmd=0x{stall['cmd']:04x} payload={stall['payload']}  (we answered: {stall['reply']})"]
+        if stall["reply"] == "typed":
+            # ROUND 21 learning: a typed reply here that STILL stalls means this command is NOT the
+            # gate — the head unit fires its EI setup burst and stops regardless of our reply type.
+            lines += ["    We sent a TYPED response to this command and it STILL stalled at the same",
+                      "    point. => this command is NOT the gate; the head unit isn't waiting on a typed",
+                      "    reply to it. The block is DOWNSTREAM of iAP/EI setup — the av1/av2 dial /",
+                      "    AppMode layer (NotifyStartSmartPhoneApps guard: m_pAuthInfo / BDaddr). Stop",
+                      "    climbing the typed-response ladder; investigate the AV-dial gate instead."]
+        else:
+            lines += ["    We answered it with a generic ACK. IF the head unit is waiting on a typed",
+                      "    response here it won't advance — but first confirm it isn't fire-and-forget:",
+                      "    if a whole EI burst arrived in <1s and then silence, the stall is likely",
+                      "    DOWNSTREAM (av1/av2 dial), not this command (see IDPS_STATE_MAP.md / ROUND 21)."]
     lines.append("=" * 74)
     return "\n".join(lines)
 
