@@ -4,4 +4,4 @@ une ou des applications HondaLink sur le téléphone.
 Dans ce même commit, j'ai retiré les autres hypothèses du script btsdp_iap_guided, mais si jamais pas capable de répliquer,
 se fier au commit juste avant "AppMode 9".
 
-Sur le Pi, on roule le profil HFP, on roule btsdp_iap_guided (hypothèse qu'on appelle Z2), et on se rend à cet écran.
+Sur le Pi, on roule le profil HFP, on roule btsdp_iap_guided (hypothèse qu'on appelle Z2), et on se rend à cet écran./

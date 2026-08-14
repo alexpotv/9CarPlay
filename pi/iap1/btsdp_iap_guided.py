@@ -219,7 +219,7 @@ class Hypothesis:
                  ea_open_session=False, ea_open_protocols=("hondalink",),
                  ea_open_trigger="device_info", ea_open_delay=2.0,
                  dataparts_session=False, dp_ipod_transfer_cmd=0x41,
-                 dp_session_start="empty", dp_auto_b2=True):
+                 dp_opcode_sweep=(), dp_auto_b2=True):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -305,10 +305,11 @@ class Hypothesis:
         # EA value not firmware-confirmed. RECEIVE is opcode-agnostic (we scan any General packet for
         # DataParts 9F02 frames), so a wrong send opcode only costs the outbound kick, not the capture.
         self.dp_ipod_transfer_cmd = dp_ipod_transfer_cmd
-        # dp_session_start: what app-data to send as the session kick. "empty" = iPodDataTransfer with
-        # just the sessionId (tests "any data activates the session"); "null_frame" = a DataParts 0x00
-        # frame (tests "the app sends a hello/notification frame first").
-        self.dp_session_start = dp_session_start
+        # dp_opcode_sweep: candidate iPodDataTransfer wire opcodes to try IN ONE CONNECTION (the app-data
+        # opcode is the one value not statically recoverable — see HONDALINK_APP_PROTOCOL.md §8). Empty =
+        # just dp_ipod_transfer_cmd. The head unit ignores unrecognized opcodes cleanly, so sweeping a
+        # small set is a cheap way to find the right one given the session caches between reconnects.
+        self.dp_opcode_sweep = tuple(dp_opcode_sweep)
         # dp_auto_b2: on receiving a DataParts 0xB1 StartAuth, best-effort build+send a 0xB2 AuthResponse
         # (nonce taken from 0xB1 if present). Even a rejected 0xB2 is informative (0xB3 vs re-0xB1 vs
         # teardown); the 0xB1 capture is logged regardless.
@@ -467,28 +468,29 @@ HYPOTHESES = [
         ea_open_session=True, ea_open_protocols=("general", "hondalink"),
         ea_open_trigger="device_info", **_FULL_INIT),
     Hypothesis(
-        "DP1", "STEP C: open session + kick it (empty iPodDataTransfer) + capture DataParts",
-        "EA1's full init + app announce, PLUS driving the iAP EA data session: after "
-        "OpenDataSessionForProtocol we send an iPodDataTransfer (opcode 0x41) carrying just the "
-        "sessionId — testing whether ANY data on the session flips the head unit's 'Session Start "
-        "notification' and makes its HNiAPAuth send us 0xB1 StartAuth. Every inbound General packet is "
-        "scanned for DataParts 9F02 frames (opcode-agnostic); a received 0xB1 is logged with its nonce "
-        "and best-effort answered with 0xB2 AuthResponse.",
-        "PRIMARY WIN: the head unit sends a DataParts 0xB1 StartAuth back over the session (logged as "
-        "[dataparts ... 0xB1]) — the first time we'd see the app protocol on the wire. Then watch for "
-        "0xB3 AuthFin (auth OK) or the app rendering over HDMI. Even 'no 0xB1' narrows the "
-        "session-start format for the next iteration.",
+        "DP1", "STEP C: drive HNiAPAuth — SessionStart + AuthRequest (opcode 0x41)",
+        "Full init + app announce, then the RE-derived HondaLink app handshake "
+        "(references/cr-v/HONDALINK_APP_PROTOCOL.md): over the open EA session we send the two "
+        "plaintext DataParts control frames the head unit waits for — Session Start (id 0x00 / payload "
+        "[01 01]) then Auth Request (id 0x00 / payload [00]) — wrapped in iPodDataTransfer (opcode "
+        "0x41). Per the firmware the Auth Request makes the head unit's HNiAPAuth send its StartAuth "
+        "(0xB1) reply. Every inbound packet is scanned for DataParts frames; a 0xB1 is logged with its "
+        "nonce and best-effort answered with 0xB2.",
+        "PRIMARY WIN: a DataParts 0xB1 StartAuth arrives on the iAP channel ([dataparts RX ... 0xB1]) — "
+        "the app protocol on the wire for the first time — then 0xB3 AuthFin / the app rendering over "
+        "HDMI. 'No 0xB1' means opcode 0x41 is wrong; run DP2 (opcode sweep).",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        dataparts_session=True, dp_session_start="empty", **_FULL_INIT),
+        dataparts_session=True, dp_ipod_transfer_cmd=0x41, **_FULL_INIT),
     Hypothesis(
-        "DP2", "STEP C: open session + kick with a DataParts null frame (0x00) + capture",
-        "Same as DP1 but the session kick is a DataParts 0x00 frame (9F02|00|check|9F03) instead of an "
-        "empty transfer — testing whether the head unit expects the app's first message to be a "
-        "well-formed DataParts 'session start / notification' frame.",
-        "As DP1. If DP1 got no 0xB1 but DP2 does, the head unit needed a valid DataParts frame to "
-        "consider the session started.",
+        "DP2", "STEP C: drive HNiAPAuth — sweep iPodDataTransfer opcodes 0x41/0x42/0x40/0x43",
+        "Same handshake as DP1, but sends the SessionStart+AuthRequest pair over several candidate "
+        "transport opcodes in one connection (0x41, 0x42, 0x40, 0x43) to find the app-data wire opcode "
+        "empirically — the one value that couldn't be pinned statically. The head unit ignores "
+        "unrecognized opcodes cleanly, so whichever one elicits a 0xB1 is the correct transport.",
+        "A 0xB1 StartAuth appears — and the btmon/log show which opcode's iPodDataTransfer preceded it. "
+        "That confirms the transport; DP1 can then be re-pinned to that opcode.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        dataparts_session=True, dp_session_start="null_frame", **_FULL_INIT),
+        dataparts_session=True, dp_opcode_sweep=(0x41, 0x42, 0x40, 0x43), **_FULL_INIT),
 ]
 
 
@@ -758,28 +760,38 @@ class Harness:
 
     # ---- step-C DataParts over the iAP EA session --------------------------------
     def take_dp_kick_packets(self, hyp):
-        """One-shot: build the session-start 'kick' — an iPodDataTransfer on the HondaLink session that
-        should flip the head unit's HNiAPAuth 'Session Start notification' and trigger it to send 0xB1.
-        Content per hyp.dp_session_start ('empty' or 'null_frame'). [] if disabled/already sent/no
-        session."""
+        """One-shot: drive the HNiAPAuth handshake. Per references/cr-v/HONDALINK_APP_PROTOCOL.md the
+        phone must send, over the open EA session, two plaintext DataParts control frames:
+            Session Start  = frame(id 0x00, payload [0x01, 0x01])   -> HU SetAuthStatus (no wire reply)
+            Auth Request   = frame(id 0x00, payload [0x00])         -> HU replies (StartAuth 0xB1)
+        These are wrapped in an iPodDataTransfer on the HondaLink session. The transport wire opcode is
+        the one value not statically recoverable, so hyp.dp_opcode_sweep lets us try several candidates
+        in one connection (the head unit ignores an unrecognized opcode cleanly). [] if disabled/already
+        sent/no session/appmode missing."""
         with self.lock:
             if self.dp_kicked or not hyp.dataparts_session or self.ea_session_id is None:
                 return []
             sid = self.ea_session_id
             self.dp_kicked = True
-        if hyp.dp_session_start == "null_frame" and appmode is not None:
-            data = appmode.build_frame(0x00, b"")     # DataParts 9F02|00|check|9F03
-            desc = "DataParts null frame 0x00"
-        else:
-            data = b""                                # empty transfer — just the sessionId
-            desc = "empty (sessionId only)"
-        pkt = iap.build_ipod_data_transfer(sid, data, cmd=hyp.dp_ipod_transfer_cmd)
-        self.log("note", event="dp_kick", session_id=sid, cmd=hyp.dp_ipod_transfer_cmd,
-                 kind=hyp.dp_session_start, data=data.hex())
-        self.mark_phase("dp_kick_sent", session_id=sid, kind=hyp.dp_session_start)
-        print(f"  [dp] kicking EA session {sid} via iPodDataTransfer(0x{hyp.dp_ipod_transfer_cmd:02x}) "
-              f"— {desc}")
-        return [pkt]
+        if appmode is None:
+            print("  [dp] appmode_proto unavailable — cannot build DataParts frames")
+            return []
+        session_start = appmode.build_frame(0x00, bytes([0x01, 0x01]))   # 9F 02 00 00 01 01 9F 03
+        auth_request = appmode.build_frame(0x00, bytes([0x00]))          # 9F 02 00 00 00 9F 03
+        opcodes = list(hyp.dp_opcode_sweep) if hyp.dp_opcode_sweep else [hyp.dp_ipod_transfer_cmd]
+        pkts = []
+        for op in opcodes:
+            # Session Start first, then Auth Request — the HU wants the session marked started before
+            # (or together with) the auth request that elicits its StartAuth reply.
+            pkts.append(iap.build_ipod_data_transfer(sid, session_start, cmd=op))
+            pkts.append(iap.build_ipod_data_transfer(sid, auth_request, cmd=op))
+        self.log("note", event="dp_kick", session_id=sid, opcodes=opcodes,
+                 session_start=session_start.hex(), auth_request=auth_request.hex())
+        self.mark_phase("dp_kick_sent", session_id=sid, opcodes=[f"0x{o:02x}" for o in opcodes])
+        print(f"  [dp] driving HNiAPAuth on session {sid}: SessionStart {session_start.hex()} + "
+              f"AuthRequest {auth_request.hex()} over iPodDataTransfer opcode(s) "
+              f"{', '.join(f'0x{o:02x}' for o in opcodes)}")
+        return pkts
 
     def handle_inbound_dataparts(self, hyp, lingo, cmd, payload):
         """Scan an inbound iAP packet for DataParts frames (opcode-agnostic: the head unit's app-data
@@ -920,11 +932,12 @@ class Harness:
         # failure — so only treat a nonzero accEndIDPSStatus as fatal if we never got past auth.
         if has("ei_mode") or has("mfi_status_acked"):
             if has("dp_kick_sent"):
-                return ("STEP C: full init + app announce + we kicked the EA session (iPodDataTransfer) "
-                        "but the head unit sent NO DataParts back (no 0xB1). The session kick didn't "
-                        "trigger HNiAPAuth. Next: try the other kick form (DP1<->DP2), and/or the "
-                        "iPodDataTransfer opcode may be wrong (0x41 assumed) — flip dp_ipod_transfer_cmd. "
-                        "Check the btmon for whether our iPodDataTransfer even got a ResiPodDataTransfer.")
+                return ("STEP C: full init + app announce + we drove HNiAPAuth (sent SessionStart + "
+                        "AuthRequest DataParts frames) but the head unit sent NO 0xB1 back. Most likely "
+                        "the iPodDataTransfer wire opcode is wrong: if this was DP1 (0x41), run DP2 which "
+                        "sweeps 0x41/0x42/0x40/0x43 in one connection. Check the btmon for any "
+                        "ResiPodDataTransfer / reply to our iPodDataTransfer. (Frames+flow are RE-derived, "
+                        "references/cr-v/HONDALINK_APP_PROTOCOL.md; the opcode is the last empirical gap.)")
             if has("ea_open_sent"):
                 return ("STEP B: full iAP init reached, AND we announced the HondaLink app via "
                         "OpenDataSessionForProtocol. Now read the SCREEN + phase checklist: if the "
@@ -1424,8 +1437,10 @@ def operator_console(harness):
             print(f"                  ea_open_session=ON  protocols={hyp.ea_open_protocols}  "
                   f"trigger={hyp.ea_open_trigger}")
         if hyp.dataparts_session:
-            print(f"                  dataparts_session=ON  kick={hyp.dp_session_start}  "
-                  f"ipod_xfer_cmd=0x{hyp.dp_ipod_transfer_cmd:02x}  auto_b2={hyp.dp_auto_b2}")
+            ops = (", ".join(f"0x{o:02x}" for o in hyp.dp_opcode_sweep)
+                   if hyp.dp_opcode_sweep else f"0x{hyp.dp_ipod_transfer_cmd:02x}")
+            print(f"                  dataparts_session=ON  HNiAPAuth handshake  "
+                  f"ipod_xfer_opcode(s)={ops}  auto_b2={hyp.dp_auto_b2}")
         cmd = _ask("\n  Press Enter to ARM this hypothesis (or s/r/q): ").lower()
         if cmd == "q":
             break
