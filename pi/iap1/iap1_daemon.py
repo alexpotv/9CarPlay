@@ -611,6 +611,40 @@ def build_open_data_session_for_protocol(session_id: int, protocol_index: int) -
     return build_packet(LINGO_GENERAL, CMD_OPEN_DATA_SESSION_FOR_PROTOCOL, payload)
 
 
+def build_packet_large_aware(lingo: int, cmd: int, payload: bytes) -> bytes:
+    """Like build_packet, but emits the LARGE-packet format (0x00 marker + 2-byte big-endian length)
+    when the body exceeds the 255-byte small-format limit. Needed for app-data (EA session) transfers
+    whose DataParts payload — an AES-encrypted identity blob — can exceed a single small packet."""
+    body_payload = bytes([lingo, cmd]) + bytes(payload)
+    sync = SYNC if OUTGOING_SYNC_MODE == "full" else SYNC_SHORT
+    if len(body_payload) <= 0xFF:
+        body = bytes([len(body_payload)]) + body_payload
+    else:
+        body = bytes([0x00, (len(body_payload) >> 8) & 0xFF, len(body_payload) & 0xFF]) + body_payload
+    return sync + body + bytes([iap1_checksum(body)])
+
+
+def build_ipod_data_transfer(session_id: int, data: bytes,
+                             cmd: int = CMD_IPOD_DATA_TRANSFER) -> bytes:
+    """iPodDataTransfer (General Lingo 0x41 by default, iPod->Device): carry app data on an open EA
+    data session. payload = [sessionIdHi, sessionIdLo, data...], where `data` is the app protocol
+    bytes (for HondaLink, DataParts 9F02..9F03 frames). The head unit forwards this to
+    HNiAPAuth::OnRecvDataFromIAppEvent. The opcode is a parameter because it's the one EA value not
+    yet firmware-confirmed (0x3F OpenDataSession IS confirmed; 0x41/0x42 are the assumed consecutive
+    iPodDataTransfer/AccessoryDataTransfer neighbors) — see CMD_IPOD_DATA_TRANSFER."""
+    payload = bytes([(session_id >> 8) & 0xFF, session_id & 0xFF]) + bytes(data)
+    return build_packet_large_aware(LINGO_GENERAL, cmd, payload)
+
+
+def parse_ea_data_transfer(payload: bytes):
+    """Split a received EA data-transfer payload into (session_id, app_data). The head unit sends app
+    data (e.g. DataParts 0xB1/0xB3) as [sessionIdHi, sessionIdLo, data...]; app_data is returned raw
+    for the caller to hand to the DataParts codec."""
+    if len(payload) < 2:
+        return None, payload
+    return (payload[0] << 8) | payload[1], bytes(payload[2:])
+
+
 def build_idps_status(trans_id: int, status: int = 0x00) -> bytes:
     """Spec Table 2-93. status=0x00: all required tokens received, authentication will proceed."""
     payload = bytes([(trans_id >> 8) & 0xFF, trans_id & 0xFF, status])

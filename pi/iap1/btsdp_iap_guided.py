@@ -217,7 +217,9 @@ class Hypothesis:
                  ei_return_dbrecords=False, ei_return_cmd=0x2c, ei_return_count=0,
                  ei_nowplaying_returns=False,
                  ea_open_session=False, ea_open_protocols=("hondalink",),
-                 ea_open_trigger="device_info", ea_open_delay=2.0):
+                 ea_open_trigger="device_info", ea_open_delay=2.0,
+                 dataparts_session=False, dp_ipod_transfer_cmd=0x41,
+                 dp_session_start="empty", dp_auto_b2=True):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -291,6 +293,26 @@ class Hypothesis:
         self.ea_open_protocols = tuple(ea_open_protocols)
         self.ea_open_trigger = ea_open_trigger
         self.ea_open_delay = ea_open_delay
+        # dataparts_session: STEP C (ROUND 32). After OpenDataSessionForProtocol registers the app,
+        # the head unit's HNiAPAuth::OnRecvDataFromIAppEvent waits to RECEIVE the app's first data on
+        # that iAP EA session ("Session Start notification FALSE" = it got nothing) and then runs the
+        # AppMode DataParts auth. So we drive it: send an iPodDataTransfer to kick the session, then
+        # decode every inbound DataParts frame and (best-effort) answer 0xB1 StartAuth with 0xB2
+        # AuthResponse (crypto from AppMode.md via pi/appmode/appmode_proto). The FIRST goal is to
+        # CAPTURE the head unit's 0xB1 (nonce/format), which no run has yet elicited.
+        self.dataparts_session = dataparts_session
+        # dp_ipod_transfer_cmd: the iPodDataTransfer opcode (phone->HU app data). 0x41 assumed; the one
+        # EA value not firmware-confirmed. RECEIVE is opcode-agnostic (we scan any General packet for
+        # DataParts 9F02 frames), so a wrong send opcode only costs the outbound kick, not the capture.
+        self.dp_ipod_transfer_cmd = dp_ipod_transfer_cmd
+        # dp_session_start: what app-data to send as the session kick. "empty" = iPodDataTransfer with
+        # just the sessionId (tests "any data activates the session"); "null_frame" = a DataParts 0x00
+        # frame (tests "the app sends a hello/notification frame first").
+        self.dp_session_start = dp_session_start
+        # dp_auto_b2: on receiving a DataParts 0xB1 StartAuth, best-effort build+send a 0xB2 AuthResponse
+        # (nonce taken from 0xB1 if present). Even a rejected 0xB2 is informative (0xB3 vs re-0xB1 vs
+        # teardown); the 0xB1 capture is logged regardless.
+        self.dp_auto_b2 = dp_auto_b2
 
 
 # ---------------------------------------------------------------------------------------------
@@ -444,6 +466,29 @@ HYPOTHESES = [
         "protocol set announced, not just the hondalink one.",
         ea_open_session=True, ea_open_protocols=("general", "hondalink"),
         ea_open_trigger="device_info", **_FULL_INIT),
+    Hypothesis(
+        "DP1", "STEP C: open session + kick it (empty iPodDataTransfer) + capture DataParts",
+        "EA1's full init + app announce, PLUS driving the iAP EA data session: after "
+        "OpenDataSessionForProtocol we send an iPodDataTransfer (opcode 0x41) carrying just the "
+        "sessionId — testing whether ANY data on the session flips the head unit's 'Session Start "
+        "notification' and makes its HNiAPAuth send us 0xB1 StartAuth. Every inbound General packet is "
+        "scanned for DataParts 9F02 frames (opcode-agnostic); a received 0xB1 is logged with its nonce "
+        "and best-effort answered with 0xB2 AuthResponse.",
+        "PRIMARY WIN: the head unit sends a DataParts 0xB1 StartAuth back over the session (logged as "
+        "[dataparts ... 0xB1]) — the first time we'd see the app protocol on the wire. Then watch for "
+        "0xB3 AuthFin (auth OK) or the app rendering over HDMI. Even 'no 0xB1' narrows the "
+        "session-start format for the next iteration.",
+        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
+        dataparts_session=True, dp_session_start="empty", **_FULL_INIT),
+    Hypothesis(
+        "DP2", "STEP C: open session + kick with a DataParts null frame (0x00) + capture",
+        "Same as DP1 but the session kick is a DataParts 0x00 frame (9F02|00|check|9F03) instead of an "
+        "empty transfer — testing whether the head unit expects the app's first message to be a "
+        "well-formed DataParts 'session start / notification' frame.",
+        "As DP1. If DP1 got no 0xB1 but DP2 does, the head unit needed a valid DataParts frame to "
+        "consider the session started.",
+        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
+        dataparts_session=True, dp_session_start="null_frame", **_FULL_INIT),
 ]
 
 
@@ -480,6 +525,8 @@ _PHASE_DESC = dict(PHASE_CHAIN)
 _PHASE_DESC["mfi_auth_reloop"] = "head unit re-sent 0x15 after our 0x19 (MFi auth not accepted)"
 _PHASE_DESC["stalled_awaiting_av_dial"] = "EI reached but no av1/av2 dial within the wait window"
 _PHASE_DESC["ea_open_sent"] = "we sent OpenDataSessionForProtocol announcing the HondaLink app (step B)"
+_PHASE_DESC["dp_kick_sent"] = "we sent the session-start iPodDataTransfer kick (step C)"
+_PHASE_DESC["dataparts_b3"] = "*** received DataParts 0xB3 AuthFin — AppMode auth likely complete ***"
 STALL_AWAIT_AV_S = 12.0   # after EI mode, how long we wait for the head unit to dial av1/av2
 STALL_SILENCE_S = 6.0     # post-auth: how long the head unit must go silent before we name the
                           # command it's stuck on (its retry unit is ~6s; normal gaps are sub-second)
@@ -565,6 +612,9 @@ class Harness:
         self.iap_sock = None             # the live iAP RFCOMM socket, for out-of-band sends (EA open)
         self.ea_protocols = []           # EA protocols the head unit declared in SetFIDTokenValues
         self.ea_opened = False           # one-shot guard: OpenDataSessionForProtocol already sent
+        self.ea_session_id = None        # session id we assigned the HondaLink protocol (for data xfer)
+        self.dp_kicked = False           # one-shot guard: session-start iPodDataTransfer already sent
+        self.dp_b2_sent = False          # one-shot guard: best-effort 0xB2 AuthResponse already sent
         # ---- phase instrumentation (per-window) ----
         self.local_bdaddr = None         # this adapter's BD address (set once at startup)
         self.conn_t0 = None              # wall clock of the current iAP connection start
@@ -604,6 +654,9 @@ class Harness:
             self.postauth_cmds = []
             self.ea_protocols = []
             self.ea_opened = False
+            self.ea_session_id = None
+            self.dp_kicked = False
+            self.dp_b2_sent = False
             self._stall_reported = False
             if self._silence_timer:
                 self._silence_timer.cancel()
@@ -687,6 +740,11 @@ class Harness:
                     pkts.append(iap.build_open_data_session_for_protocol(session_id, p["index"]))
                     opened.append({"session_id": session_id, "index": p["index"],
                                    "protocol": p["protocol"], "bundle_seed_id": p["bundle_seed_id"]})
+                    # remember the HondaLink session for the step-C data-transfer kick (prefer the
+                    # 'hondalink' protocol; fall back to the first opened session)
+                    with self.lock:
+                        if self.ea_session_id is None or "hondalink" in p["protocol"].lower():
+                            self.ea_session_id = session_id
                     session_id += 1
                     break
         if opened:
@@ -697,6 +755,92 @@ class Harness:
         else:
             print(f"  [ea-open] no declared EA protocol matched {hyp.ea_open_protocols} — nothing sent")
         return pkts
+
+    # ---- step-C DataParts over the iAP EA session --------------------------------
+    def take_dp_kick_packets(self, hyp):
+        """One-shot: build the session-start 'kick' — an iPodDataTransfer on the HondaLink session that
+        should flip the head unit's HNiAPAuth 'Session Start notification' and trigger it to send 0xB1.
+        Content per hyp.dp_session_start ('empty' or 'null_frame'). [] if disabled/already sent/no
+        session."""
+        with self.lock:
+            if self.dp_kicked or not hyp.dataparts_session or self.ea_session_id is None:
+                return []
+            sid = self.ea_session_id
+            self.dp_kicked = True
+        if hyp.dp_session_start == "null_frame" and appmode is not None:
+            data = appmode.build_frame(0x00, b"")     # DataParts 9F02|00|check|9F03
+            desc = "DataParts null frame 0x00"
+        else:
+            data = b""                                # empty transfer — just the sessionId
+            desc = "empty (sessionId only)"
+        pkt = iap.build_ipod_data_transfer(sid, data, cmd=hyp.dp_ipod_transfer_cmd)
+        self.log("note", event="dp_kick", session_id=sid, cmd=hyp.dp_ipod_transfer_cmd,
+                 kind=hyp.dp_session_start, data=data.hex())
+        self.mark_phase("dp_kick_sent", session_id=sid, kind=hyp.dp_session_start)
+        print(f"  [dp] kicking EA session {sid} via iPodDataTransfer(0x{hyp.dp_ipod_transfer_cmd:02x}) "
+              f"— {desc}")
+        return [pkt]
+
+    def handle_inbound_dataparts(self, hyp, lingo, cmd, payload):
+        """Scan an inbound iAP packet for DataParts frames (opcode-agnostic: the head unit's app-data
+        opcode is unconfirmed, so we look for 9F02..9F03 in any General-Lingo payload). Log each frame;
+        on a 0xB1 StartAuth, best-effort build a 0xB2 AuthResponse. Returns extra packets to send."""
+        if not hyp.dataparts_session or appmode is None or lingo != iap.LINGO_GENERAL:
+            return []
+        # app data arrives as [sessionId(2), dataparts]; also scan the whole payload in case the
+        # framing differs. parse_ea_data_transfer just strips a 2-byte prefix when present.
+        _sid, app_data = iap.parse_ea_data_transfer(payload)
+        frames = list(appmode.parse_frames(payload)) or list(appmode.parse_frames(app_data))
+        if not frames:
+            return []
+        out = []
+        for f in frames:
+            self.log("note", event="dataparts_rx", cmd=cmd, pack_id=f.pack_id, name=f.name,
+                     check=f.check, check_ok=f.check_ok, payload=f.payload.hex())
+            print(f"  [dataparts RX cmd=0x{cmd:02x}] {f.describe()}")
+            if f.pack_id == 0xB1:
+                self.mark_phase("dataparts_b1", channel="iap_ea", payload=f.payload.hex())
+                print(f"  *** RECEIVED 0xB1 StartAuth over the iAP EA session — payload={f.payload.hex()} ***")
+                if hyp.dp_auto_b2:
+                    b2 = self._build_b2_response(f)
+                    if b2 is not None:
+                        out.append(b2)
+            elif f.pack_id == 0xB3:
+                self.mark_phase("dataparts_b3", channel="iap_ea", payload=f.payload.hex())
+                print("  *** RECEIVED 0xB3 AuthFin — AppMode auth likely COMPLETE ***")
+        return out
+
+    def _build_b2_response(self, b1_frame):
+        """Best-effort 0xB2 AuthResponse to a received 0xB1. The nonce/info/identity-blob layout aren't
+        firmware-pinned (AppMode.md §7), so this is a PROBE: derive the key from a candidate nonce
+        (the 4 bytes after the 0xB1 subtype, if present), encrypt a plausible identity blob, frame it,
+        and send via iPodDataTransfer. The head unit's reaction (0xB3 vs re-0xB1 vs teardown) tells us
+        whether the nonce/format guesses are right. Sent once per window."""
+        with self.lock:
+            if self.dp_b2_sent or self.ea_session_id is None:
+                return None
+            sid = self.ea_session_id
+            self.dp_b2_sent = True
+        # candidate nonce: 0xB1 payload is subtype(1) [+ nonce(4)] per AppMode.md taxonomy (id 0xB1,
+        # subtype 00/01, len 3/5). If >=5 bytes present, take bytes [1:5] as the nonce; else zero.
+        p = b1_frame.payload
+        nonce = p[1:5] if len(p) >= 5 else b"\x00\x00\x00\x00"
+        key = appmode.derive_key(nonce, info=b"")
+        # plausible identity blob (length-prefixed fields; layout UNCONFIRMED — a probe). Order per
+        # ROUND 18: ManufactureName, ModelName, OSVersion, IndividualInfo, AppVersion, AppId.
+        def lp(s):
+            b = s.encode() if isinstance(s, str) else s
+            return bytes([len(b)]) + b
+        blob = (lp("Apple") + lp("iPhone") + lp("7.0") + lp("0000")
+                + lp("1.0") + lp("jp.co.honda.rd.dispaudio.app.hondalink"))
+        ct = appmode.aes_cbc_encrypt(key, blob)
+        b2_payload = bytes([0x00]) + ct     # subtype 0x00 + ciphertext (best-effort)
+        frame = appmode.build_frame(0xB2, b2_payload)
+        self.log("note", event="dp_b2_sent", session_id=sid, nonce=nonce.hex(),
+                 key=key.hex(), blob=blob.hex(), frame=frame.hex())
+        print(f"  [dp] best-effort 0xB2 AuthResponse: nonce={nonce.hex()} key={key.hex()} "
+              f"({len(frame)}B frame) — PROBE, format unconfirmed")
+        return iap.build_ipod_data_transfer(sid, frame, cmd=self.current.dp_ipod_transfer_cmd)
 
     def _report_stall(self, window_at_arm):
         with self.lock:
@@ -749,6 +893,18 @@ class Harness:
         has = reached.__contains__
         if not has("rfcomm_iap"):
             return "No iAP connection — head unit never opened the RFCOMM channel this window."
+        # STEP C: DataParts over the iAP EA session is the definitive breakthrough signal.
+        if has("dataparts_b3"):
+            return ("*** BREAKTHROUGH: received DataParts 0xB3 AuthFin over the iAP EA session — the "
+                    "AppMode/HNiAPAuth handshake likely COMPLETED. The app should now be authenticated; "
+                    "watch for it rendering over HDMI / the head unit connecting av1/av2 for vehicle data.")
+        if has("dataparts_b1"):
+            ch = reached.get("dataparts_b1", {}).get("channel", "")
+            return (f"*** MAJOR: received DataParts 0xB1 StartAuth ({ch}) — the HondaLink app protocol is "
+                    "on the wire for the first time. Capture its nonce/format from the log; if our "
+                    "best-effort 0xB2 wasn't accepted (no 0xB3), build a correct 0xB2 from the captured "
+                    "0xB1 (nonce direction + identity blob) and re-run. This confirms the transport = "
+                    "iAP EA session.")
         if has("av_inbound_dial"):
             if has("dataparts_b1"):
                 return ("BREAKTHROUGH: head unit dialed av1/av2 AND sent DataParts 0xB1. The L2 AppMode "
@@ -763,6 +919,12 @@ class Harness:
         # pre-idps_end gap is the two-attempt btmon stitching artifact (ROUND 20), NOT a real IDPS
         # failure — so only treat a nonzero accEndIDPSStatus as fatal if we never got past auth.
         if has("ei_mode") or has("mfi_status_acked"):
+            if has("dp_kick_sent"):
+                return ("STEP C: full init + app announce + we kicked the EA session (iPodDataTransfer) "
+                        "but the head unit sent NO DataParts back (no 0xB1). The session kick didn't "
+                        "trigger HNiAPAuth. Next: try the other kick form (DP1<->DP2), and/or the "
+                        "iPodDataTransfer opcode may be wrong (0x41 assumed) — flip dp_ipod_transfer_cmd. "
+                        "Check the btmon for whether our iPodDataTransfer even got a ResiPodDataTransfer.")
             if has("ea_open_sent"):
                 return ("STEP B: full iAP init reached, AND we announced the HondaLink app via "
                         "OpenDataSessionForProtocol. Now read the SCREEN + phase checklist: if the "
@@ -825,6 +987,12 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
     armed hypothesis. Reuses iap1_daemon's builders so the wire format stays identical to the
     production daemon; only the *policy* (which of them to send, and when) varies per hypothesis."""
     out = []
+    # STEP C: once the EA session is open, the head unit's app data (DataParts 0xB1/0xB3) can arrive on
+    # any General-Lingo opcode. Scan for it here (opcode-agnostic), gated on ea_opened and excluding the
+    # big binary auth packets (0x15 cert / 0x18 signature) so their bytes can't false-positive as frames.
+    if (lingo == iap.LINGO_GENERAL and hyp.dataparts_session and harness.ea_opened
+            and cmd not in (iap.CMD_RET_DEV_AUTHENTICATION_INFO, iap.CMD_RET_DEV_AUTHENTICATION_SIGNATURE)):
+        out.extend(harness.handle_inbound_dataparts(hyp, lingo, cmd, payload))
     if lingo == iap.LINGO_EXTENDED_INTERFACE:
         # CHANGE 2: EI mode means iAP auth is done and AppMode is Active — the moment the head unit
         # expects the AV/data channel. Dial its av1/av2 channels once, shortly after EI starts.
@@ -967,6 +1135,10 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
         # that moment to announce the HondaLink app via OpenDataSessionForProtocol (one-shot).
         if hyp.ea_open_session and hyp.ea_open_trigger == "device_info":
             out.extend(harness.take_ea_open_packets(hyp))
+            # STEP C: right after announcing the app, kick the EA session so the head unit's HNiAPAuth
+            # starts the DataParts auth (sends us 0xB1). One-shot.
+            if hyp.dataparts_session:
+                out.extend(harness.take_dp_kick_packets(hyp))
         return out
     if cmd == iap.CMD_UNKNOWN_0X11:
         # The head unit's iPod-options request (firmware receives "RetiPodOutOption" in reply). How
@@ -1251,6 +1423,9 @@ def operator_console(harness):
         if hyp.ea_open_session:
             print(f"                  ea_open_session=ON  protocols={hyp.ea_open_protocols}  "
                   f"trigger={hyp.ea_open_trigger}")
+        if hyp.dataparts_session:
+            print(f"                  dataparts_session=ON  kick={hyp.dp_session_start}  "
+                  f"ipod_xfer_cmd=0x{hyp.dp_ipod_transfer_cmd:02x}  auto_b2={hyp.dp_auto_b2}")
         cmd = _ask("\n  Press Enter to ARM this hypothesis (or s/r/q): ").lower()
         if cmd == "q":
             break
