@@ -455,6 +455,13 @@ _FULL_INIT = dict(cert_section_mode="ack_transid", auth_transid=True,
                   auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
                   ei_nowplaying_returns=True)
 
+# ROUND 42 — variant of _FULL_INIT that authenticates in the REAL iPhone order: IDPS fully completes
+# (EndIDPS -> we send IDPSStatus) BEFORE device authentication starts. hondalink/7 showed sending our
+# GetDevAuthenticationInfo (0x14) right after the FID tokens (auth_trigger="after_fidtokens") leaves the
+# head unit stalled ~18s before it sends EndIDPS — an out-of-order init a real phone never produces, and
+# a likely source of a non-zero init Err (OnRN_iPod_NotifyInitialize) that fails the app-auth gate.
+_FULL_INIT_ENDIDPS = {**_FULL_INIT, "auth_trigger": "after_endidps"}
+
 HYPOTHESES = [
     Hypothesis(
         "Z2", "CONTROL: full iAP init to the HondaLink app-launch stage",
@@ -573,6 +580,35 @@ HYPOTHESES = [
         "⇒ BDaddr wasn't the failing guard.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
         av_spp_handshake=True, av_spp_channels=("av1", "av2"), av_spp_bind_local=True, **_FULL_INIT),
+    # ---- ROUND 42: Option-1 (init completion) probes. RE (Option 2) confirmed the app-auth gate
+    # (NotifyStartSmartPhoneApps guards 1/5) is fed by the iPod-init result OnRN_iPod_NotifyInitialize
+    # (ConnectType/AuthType/Err) — not BDaddr/direction/timing (all empirically ruled out). So the lever
+    # is the init itself. hondalink/7 exposed two divergences from a real iPhone: (a) we auth out-of-order
+    # (0x14 mid-IDPS) → 18s stall; (b) near-zero iPodOptions capability masks.
+    Hypothesis(
+        "IDPS_ORDER", "OPT-1a: authenticate in real iPhone order (device auth AFTER EndIDPS)",
+        "Identical to DP5 (full init + app announce + av1/av2 SPP handshake) but sends "
+        "GetDevAuthenticationInfo (0x14) only AFTER the head unit's EndIDPS + our IDPSStatus, matching the "
+        "real iAP1 order (IDPS completes, THEN authentication). hondalink/7 showed our current "
+        "'after_fidtokens' auth injects 0x14 mid-IDPS and the head unit then stalls ~18s before EndIDPS — an "
+        "out-of-order init that plausibly yields a non-zero init Err and fails the app-auth gate.",
+        "The ~18s pre-EndIDPS stall SHRINKS/vanishes AND the av1/av2 SPP stays up past ~1.27s / the head unit "
+        "sends 0xB1 or dials us — i.e. a clean, correctly-ordered init flips the gate. If the stall persists, "
+        "the 18s is a head-unit timer independent of our auth ordering.",
+        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
+        av_spp_handshake=True, av_spp_channels=("av1", "av2"), **_FULL_INIT_ENDIDPS),
+    Hypothesis(
+        "IDPS_MAXOPT", "OPT-1b: declare broad iPod capabilities (richer RetiPodOptionsForLingo masks)",
+        "Identical to DP5 but returns richer per-lingo option bitmasks instead of near-zero. We currently "
+        "advertise only General bit 0x2000 (iPhone-OS apps) and ZERO for every other lingo; a real iPhone "
+        "declares many capability bits. If the head unit derives the connected device's AuthType/capability "
+        "(and thus the app-auth gate) partly from these masks, under-declaring them limits it. Sets General "
+        "+ all lingoes to a broad low-bit mask as a capability probe.",
+        "SPP stays up / 0xB1 / HU dials us where plain DP5 didn't ⇒ the capability masks were part of the "
+        "gate. No change ⇒ options aren't the lever (the init Err/ordering is).",
+        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
+        general_options=0x000000000000FFFF, other_lingo_options=0x000000000000FFFF,
+        av_spp_handshake=True, av_spp_channels=("av1", "av2"), **_FULL_INIT),
 ]
 
 
