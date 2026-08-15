@@ -219,7 +219,8 @@ class Hypothesis:
                  ea_open_session=False, ea_open_protocols=("hondalink",),
                  ea_open_trigger="device_info", ea_open_delay=2.0,
                  dataparts_session=False, dp_ipod_transfer_cmd=0x41,
-                 dp_opcode_sweep=(), dp_auto_b2=True):
+                 dp_opcode_sweep=(), dp_auto_b2=True,
+                 av_spp_handshake=False, av_spp_channels=("av1", "av2")):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -314,6 +315,18 @@ class Hypothesis:
         # (nonce taken from 0xB1 if present). Even a rejected 0xB2 is informative (0xB3 vs re-0xB1 vs
         # teardown); the 0xB1 capture is logged regardless.
         self.dp_auto_b2 = dp_auto_b2
+        # av_spp_handshake: STEP C, corrected transport (ROUND 36). hondalink/3 proved the DataParts
+        # app handshake does NOT ride the iAP EA session — the head unit ignored every iPodDataTransfer
+        # opcode there. Instead the head unit ACCEPTED our av1/av2 SPP dials, then DISC'd ~1.2s later
+        # because we sent ZERO bytes on them: it waits for the phone's first AppMode frame on the SPP
+        # socket (AppMode.md §1/§8 — auth is over av1/av2 SPP, not iAP). This flag makes _av_out_session
+        # push the SessionStart+AuthRequest DataParts frames on the SPP socket right after connect and
+        # auto-answer a 0xB1 StartAuth with 0xB2 on the SAME socket.
+        self.av_spp_handshake = av_spp_handshake
+        # av_spp_channels: which dialed SPP channel(s) carry the AppMode auth handshake. AppMode.md §7
+        # unknown #3 (channel 5 vs 6 assignment) is unresolved, so default to sending on both; the head
+        # unit drops the wrong one cleanly.
+        self.av_spp_channels = tuple(av_spp_channels)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -491,6 +504,22 @@ HYPOTHESES = [
         "That confirms the transport; DP1 can then be re-pinned to that opcode.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
         dataparts_session=True, dp_opcode_sweep=(0x41, 0x42, 0x40, 0x43), **_FULL_INIT),
+    Hypothesis(
+        "DP5", "STEP C, CORRECTED TRANSPORT: drive AppMode auth over av1/av2 SPP (not iAP EA)",
+        "hondalink/3 resolved the transport: the head unit IGNORED the DataParts handshake on every iAP "
+        "iPodDataTransfer opcode (DP1/DP2), but ACCEPTED our av1/av2 SPP dials and then DISC'd ~1.2s later "
+        "because we sent ZERO bytes on them — it waits for the phone's first AppMode frame on the SPP "
+        "socket (AppMode.md §1/§8: the 0xB1/0xB2/0xB3 auth rides av1/av2 SPP, not the iAP channel). This "
+        "hypothesis keeps the EA app-announce (OpenDataSessionForProtocol, which made the head unit treat "
+        "the app as present) but moves the handshake to the SPP socket: right after the av1/av2 dial we "
+        "push SessionStart (id 0x00/[01 01]) + AuthRequest (id 0x00/[00]) on the SPP channel(s), then "
+        "answer a 0xB1 StartAuth with a best-effort 0xB2 on the same socket.",
+        "PRIMARY WIN: the av1/av2 SPP channel STAYS UP past ~1.2s (no DISC) and/or a DataParts 0xB1 "
+        "StartAuth arrives on it ([dataparts av1 rx] / [av-out av1 rx]) — the AppMode auth on the wire for "
+        "the first time. Even 'channel stays open longer' is signal that the first frame was accepted. If "
+        "it still DISC's immediately, the first-frame format/subtype is wrong (not the transport).",
+        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
+        av_spp_handshake=True, av_spp_channels=("av1", "av2"), **_FULL_INIT),
 ]
 
 
@@ -822,20 +851,17 @@ class Harness:
                 print("  *** RECEIVED 0xB3 AuthFin — AppMode auth likely COMPLETE ***")
         return out
 
-    def _build_b2_response(self, b1_frame):
-        """Best-effort 0xB2 AuthResponse to a received 0xB1. The nonce/info/identity-blob layout aren't
-        firmware-pinned (AppMode.md §7), so this is a PROBE: derive the key from a candidate nonce
-        (the 4 bytes after the 0xB1 subtype, if present), encrypt a plausible identity blob, frame it,
-        and send via iPodDataTransfer. The head unit's reaction (0xB3 vs re-0xB1 vs teardown) tells us
-        whether the nonce/format guesses are right. Sent once per window."""
-        with self.lock:
-            if self.dp_b2_sent or self.ea_session_id is None:
-                return None
-            sid = self.ea_session_id
-            self.dp_b2_sent = True
+    def _build_b2_frame(self, b1_payload, source="spp"):
+        """Best-effort RAW 0xB2 AuthResponse DataParts frame for a received 0xB1. The nonce/info/identity
+        -blob layout aren't firmware-pinned (AppMode.md §7), so this is a PROBE: derive the key from a
+        candidate nonce (the 4 bytes after the 0xB1 subtype, if present), encrypt a plausible identity
+        blob, and frame it. Returns the bare 9F02..9F03 frame bytes (transport-agnostic) or None. The
+        head unit's reaction (0xB3 vs re-0xB1 vs teardown) tells us whether the guesses are right."""
+        if appmode is None:
+            return None
         # candidate nonce: 0xB1 payload is subtype(1) [+ nonce(4)] per AppMode.md taxonomy (id 0xB1,
         # subtype 00/01, len 3/5). If >=5 bytes present, take bytes [1:5] as the nonce; else zero.
-        p = b1_frame.payload
+        p = b1_payload
         nonce = p[1:5] if len(p) >= 5 else b"\x00\x00\x00\x00"
         key = appmode.derive_key(nonce, info=b"")
         # plausible identity blob (length-prefixed fields; layout UNCONFIRMED — a probe). Order per
@@ -848,10 +874,24 @@ class Harness:
         ct = appmode.aes_cbc_encrypt(key, blob)
         b2_payload = bytes([0x00]) + ct     # subtype 0x00 + ciphertext (best-effort)
         frame = appmode.build_frame(0xB2, b2_payload)
-        self.log("note", event="dp_b2_sent", session_id=sid, nonce=nonce.hex(),
+        self.log("note", event="dp_b2_built", source=source, nonce=nonce.hex(),
                  key=key.hex(), blob=blob.hex(), frame=frame.hex())
-        print(f"  [dp] best-effort 0xB2 AuthResponse: nonce={nonce.hex()} key={key.hex()} "
+        print(f"  [dp] best-effort 0xB2 AuthResponse ({source}): nonce={nonce.hex()} key={key.hex()} "
               f"({len(frame)}B frame) — PROBE, format unconfirmed")
+        return frame
+
+    def _build_b2_response(self, b1_frame):
+        """DEPRECATED iAP-EA transport (hondalink/3 proved the head unit ignores DataParts on the iAP
+        channel). Kept so the legacy DP1/DP2 inbound path still answers a 0xB1 if one ever arrives there.
+        The live transport is now av1/av2 SPP — see _av_out_session / av_spp_handshake. Sent once."""
+        with self.lock:
+            if self.dp_b2_sent or self.ea_session_id is None:
+                return None
+            sid = self.ea_session_id
+            self.dp_b2_sent = True
+        frame = self._build_b2_frame(b1_frame.payload, source="iap_ea")
+        if frame is None:
+            return None
         return iap.build_ipod_data_transfer(sid, frame, cmd=self.current.dp_ipod_transfer_cmd)
 
     def _report_stall(self, window_at_arm):
@@ -1573,8 +1613,25 @@ def _log_dataparts(harness, tag, direction, chunk):
             harness.mark_phase("dataparts_b1", channel=tag, payload=f.payload.hex())
 
 
+def _av_spp_send(harness, sock, tag, frame, label):
+    """Send one raw DataParts frame on an SPP socket, logging it."""
+    try:
+        sock.sendall(frame)
+    except OSError as e:
+        harness.log("note", event="av_spp_send_failed", channel=tag, error=str(e))
+        print(f"[av-out {tag}] send {label} FAILED: {e}")
+        return False
+    harness.log("tx", note="av_spp", channel=tag, raw=frame.hex(), label=label)
+    print(f"  [av-out {tag} tx] {label}: {frame.hex()}")
+    return True
+
+
 def _av_out_session(harness, bdaddr, tag, channel):
-    """Dial OUT to the head unit's AV/data SPP (RFCOMM server channel) and log/decode what it sends."""
+    """Dial OUT to the head unit's AV/data SPP (RFCOMM server channel). ROUND 36: hondalink/3 showed the
+    head unit ACCEPTS this dial but DISC's ~1.2s later when we send nothing — it waits for the phone's
+    first AppMode DataParts frame here (the app auth is over SPP, not the iAP EA session; AppMode.md §8).
+    So, if the active hypothesis sets av_spp_handshake, push SessionStart + AuthRequest right after
+    connect and answer a 0xB1 StartAuth with a best-effort 0xB2 on THIS socket."""
     try:
         sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, _BTPROTO_RFCOMM)
         sock.settimeout(10.0)
@@ -1586,6 +1643,23 @@ def _av_out_session(harness, bdaddr, tag, channel):
         return
     harness.log("note", event="av_out_connected", channel=tag, chan=channel, bdaddr=bdaddr)
     print(f"\n[av-out {tag}] *** CONNECTED to head unit {bdaddr} ch{channel} — dialed AV channel! ***")
+
+    hyp = harness.current
+    do_handshake = (appmode is not None and hyp is not None
+                    and getattr(hyp, "av_spp_handshake", False)
+                    and tag in getattr(hyp, "av_spp_channels", ()))
+    b2_sent = False
+    if do_handshake:
+        # The two plaintext control frames the head unit's HNiAPAuth waits for (HONDALINK_APP_PROTOCOL.md):
+        # Session Start (id 0x00 / payload [01 01]) then Auth Request (id 0x00 / payload [00]).
+        session_start = appmode.build_frame(0x00, bytes([0x01, 0x01]))
+        auth_request = appmode.build_frame(0x00, bytes([0x00]))
+        harness.log("note", event="av_spp_handshake", channel=tag,
+                    session_start=session_start.hex(), auth_request=auth_request.hex())
+        print(f"[av-out {tag}] driving AppMode handshake over SPP (SessionStart + AuthRequest)")
+        _av_spp_send(harness, sock, tag, session_start, "SessionStart")
+        _av_spp_send(harness, sock, tag, auth_request, "AuthRequest")
+
     try:
         while True:
             try:
@@ -1598,6 +1672,14 @@ def _av_out_session(harness, bdaddr, tag, channel):
             harness.log("rx", note="av_out", channel=tag, raw=chunk.hex())
             print(f"  [av-out {tag} rx] {len(chunk)} bytes: {chunk.hex()[:100]}")
             _log_dataparts(harness, tag, "rx", chunk)
+            # Answer a 0xB1 StartAuth with a best-effort 0xB2 on THIS SPP socket (the correct transport).
+            if do_handshake and not b2_sent and appmode is not None:
+                for f in appmode.parse_frames(chunk):
+                    if f.pack_id == 0xB1:
+                        frame = harness._build_b2_frame(f.payload, source=f"spp:{tag}")
+                        if frame is not None and _av_spp_send(harness, sock, tag, frame, "0xB2 AuthResponse"):
+                            b2_sent = True
+                        break
     finally:
         harness.log("note", event="av_out_closed", channel=tag)
         print(f"[av-out {tag}] closed")
