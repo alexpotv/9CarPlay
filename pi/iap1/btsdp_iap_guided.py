@@ -220,7 +220,8 @@ class Hypothesis:
                  ea_open_trigger="device_info", ea_open_delay=2.0,
                  dataparts_session=False, dp_ipod_transfer_cmd=0x41,
                  dp_opcode_sweep=(), dp_auto_b2=True,
-                 av_spp_handshake=False, av_spp_channels=("av1", "av2")):
+                 av_spp_handshake=False, av_spp_channels=("av1", "av2"),
+                 av_dial_mode="outbound", av_dial_delay=None, av_spp_bind_local=False):
         self.key = key
         self.title = title
         self.rationale = rationale
@@ -327,6 +328,20 @@ class Hypothesis:
         # unknown #3 (channel 5 vs 6 assignment) is unresolved, so default to sending on both; the head
         # unit drops the wrong one cleanly.
         self.av_spp_channels = tuple(av_spp_channels)
+        # ROUND 39 — probes for the NotifyStartSmartPhoneApps gate (FUN_00078608). The HU never dials us
+        # and tears our outbound SPP down at a fixed ~1.27s; the gate's success path (HU dials the phone's
+        # av1/av2) is behind guards: connection-mode ∈ {2,3}, m_pLPALMIf, GetBDAddress!=NULL/≠0,
+        # m_pAuthInfo!=NULL, final check. These flags let each hypothesis probe a different guard.
+        #   av_dial_mode: "outbound" = we dial the HU's av1/av2 (current); "host_only" = do NOT dial, only
+        #     host av1/av2 and wait for the HU to dial US (tests whether our outbound dial preempts the HU's
+        #     RequestConnectAvSpp / trips the ConApp m_BDAddress match — Thread B / direction).
+        self.av_dial_mode = av_dial_mode
+        # av_dial_delay: seconds after EI before the outbound dial. None = the module default. A longer
+        # delay lets AppMode go Active / m_pAuthInfo latch before we connect (timing probe — Thread A-adjacent).
+        self.av_dial_delay = av_dial_delay
+        # av_spp_bind_local: bind the outbound SPP socket to our local adapter BD address before connect, so
+        # the source address the HU sees is unambiguous (guards 3/4 GetBDAddress + ConApp match — Thread B).
+        self.av_spp_bind_local = av_spp_bind_local
 
 
 # ---------------------------------------------------------------------------------------------
@@ -520,6 +535,44 @@ HYPOTHESES = [
         "it still DISC's immediately, the first-frame format/subtype is wrong (not the transport).",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
         av_spp_handshake=True, av_spp_channels=("av1", "av2"), **_FULL_INIT),
+    # ---- ROUND 39: probes for the NotifyStartSmartPhoneApps gate (hondalink/5 diagnosis). Framing is now
+    # correct (HU accepts our frames), but the HU tears down the SPP at a fixed ~1.27s and NEVER dials us.
+    # The gate FUN_00078608 success path (HU dials the phone's av1/av2) is behind guards: conn-mode∈{2,3},
+    # m_pLPALMIf, GetBDAddress!=NULL/≠0, m_pAuthInfo!=NULL. Each hypothesis below isolates one suspicion.
+    Hypothesis(
+        "G_HOST", "GATE-B: host-only — do NOT dial av1/av2; wait for the HU to dial US",
+        "Every prior round DIALED the HU's av1/av2 server. In the production flow the HU dials the PHONE "
+        "(LPALinkManager VS_SPP1 / RequestConnectAvSpp), and the ConApp validates the connection's BDaddr "
+        "against m_BDAddress. Our outbound dial may occupy those channels / trip that match so the HU never "
+        "makes its own connection. This hypothesis does full init + app announce but does NOT dial out — it "
+        "only HOSTS av1/av2 (DataChannelProfile) and waits. If the gate otherwise passes, the HU should dial "
+        "US.",
+        "*** av_inbound_dial ticks — the head unit DIALS our av1/av2 *** (the AppMode AV connect on the "
+        "correct, HU-initiated direction). Then DataParts 0xB1 should arrive on that inbound channel. If the "
+        "HU still never dials, the gate fails upstream of the SPP (m_pAuthInfo / conn-mode), not on direction.",
+        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
+        av_dial_mode="host_only", **_FULL_INIT),
+    Hypothesis(
+        "G_LATE", "GATE-A: dial av1/av2 much later (EI+6s) so AppMode/m_pAuthInfo latches first",
+        "The gate needs m_pAuthInfo != NULL (set when NotifyIOSAuthEvent fires 'AppMode Active' after auth). "
+        "We currently dial ~1.5s after EI — possibly before AppMode goes Active, so the gate sees "
+        "m_pAuthInfo NULL and the HU tears the SPP down. This hypothesis is identical to DP5 but delays the "
+        "outbound dial + SPP handshake to EI+6s, giving the auth-complete event time to latch.",
+        "The av1/av2 SPP STAYS UP past ~1.27s and/or a 0xB1 StartAuth arrives — i.e. the earlier teardown was "
+        "a timing race with AppMode-Active, not a hard auth failure. No change ⇒ m_pAuthInfo is a genuine "
+        "gate, not a race.",
+        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
+        av_spp_handshake=True, av_spp_channels=("av1", "av2"), av_dial_delay=6.0, **_FULL_INIT),
+    Hypothesis(
+        "G_BIND", "GATE-B: bind the outbound SPP dial to our local adapter (BDaddr match)",
+        "The HU's ConApp rejects an app connection whose BDaddr != m_BDAddress ('IAP_BT BDAdder Not match'). "
+        "Identical to DP5 but binds the outbound av1/av2 sockets to our local adapter address before connect, "
+        "so the source BDaddr the HU associates with the app connection is unambiguous and matches the iAP "
+        "link's address.",
+        "SPP stays up / 0xB1 arrives where plain DP5 was torn down ⇒ the BDaddr match was the gate. No change "
+        "⇒ BDaddr wasn't the failing guard.",
+        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
+        av_spp_handshake=True, av_spp_channels=("av1", "av2"), av_spp_bind_local=True, **_FULL_INIT),
 ]
 
 
@@ -1049,8 +1102,13 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
     if lingo == iap.LINGO_EXTENDED_INTERFACE:
         # CHANGE 2: EI mode means iAP auth is done and AppMode is Active — the moment the head unit
         # expects the AV/data channel. Dial its av1/av2 channels once, shortly after EI starts.
-        if CONNECT_AV_ON_EI and not harness.av_out_started:
-            threading.Timer(AV_CONNECT_DELAY_S, connect_head_unit_av, args=(harness,)).start()
+        if (CONNECT_AV_ON_EI and not harness.av_out_started
+                and getattr(hyp, "av_dial_mode", "outbound") != "host_only"):
+            delay = hyp.av_dial_delay if getattr(hyp, "av_dial_delay", None) is not None else AV_CONNECT_DELAY_S
+            threading.Timer(delay, connect_head_unit_av, args=(harness,)).start()
+        elif getattr(hyp, "av_dial_mode", "outbound") == "host_only" and not harness.av_out_started:
+            harness.av_out_started = True   # suppress any outbound dial; we only host + wait
+            harness.log("note", event="av_host_only", note="not dialing out; waiting for HU to dial av1/av2")
         # Post-auth, the head unit enters Extended Interface mode (via General 0x05) and drives the
         # iPod-Out UI/DB setup with 2-byte EI commands (cmd is a 16-bit int here; iap1_daemon parses
         # the width). We don't yet know each EI command's reply, so autoack answers with an EI ACK
@@ -1613,6 +1671,30 @@ def _log_dataparts(harness, tag, direction, chunk):
             harness.mark_phase("dataparts_b1", channel=tag, payload=f.payload.hex())
 
 
+def _av_spp_recv_loop(harness, sock, tag, event_prefix, answer_b1):
+    """Shared SPP recv loop: log/decode DataParts, and (if answer_b1) reply to a 0xB1 StartAuth with a
+    best-effort 0xB2 on THIS socket. Used by both the outbound dial and the inbound (host-only) path."""
+    b2_sent = False
+    while True:
+        try:
+            chunk = sock.recv(4096)
+        except OSError as e:
+            harness.log("note", event=f"{event_prefix}_recv_error", channel=tag, error=str(e))
+            break
+        if not chunk:
+            break
+        harness.log("rx", note=event_prefix, channel=tag, raw=chunk.hex())
+        print(f"  [{event_prefix} {tag} rx] {len(chunk)} bytes: {chunk.hex()[:100]}")
+        _log_dataparts(harness, tag, "rx", chunk)
+        if answer_b1 and not b2_sent and appmode is not None:
+            for f in appmode.parse_frames(chunk):
+                if f.pack_id == 0xB1:
+                    frame = harness._build_b2_frame(f.payload, source=f"spp:{tag}")
+                    if frame is not None and _av_spp_send(harness, sock, tag, frame, "0xB2 AuthResponse"):
+                        b2_sent = True
+                    break
+
+
 def _av_spp_send(harness, sock, tag, frame, label):
     """Send one raw DataParts frame on an SPP socket, logging it."""
     try:
@@ -1632,9 +1714,18 @@ def _av_out_session(harness, bdaddr, tag, channel):
     first AppMode DataParts frame here (the app auth is over SPP, not the iAP EA session; AppMode.md §8).
     So, if the active hypothesis sets av_spp_handshake, push SessionStart + AuthRequest right after
     connect and answer a 0xB1 StartAuth with a best-effort 0xB2 on THIS socket."""
+    hyp = harness.current
     try:
         sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, _BTPROTO_RFCOMM)
         sock.settimeout(10.0)
+        # Thread B: bind to our local adapter address first, so the source BDaddr the HU associates with
+        # this app connection is unambiguous (its ConApp compares the connection addr to m_BDAddress).
+        if hyp is not None and getattr(hyp, "av_spp_bind_local", False) and harness.local_bdaddr:
+            try:
+                sock.bind((harness.local_bdaddr, 0))
+                harness.log("note", event="av_spp_bound_local", channel=tag, local=harness.local_bdaddr)
+            except OSError as e:
+                harness.log("note", event="av_spp_bind_failed", channel=tag, error=str(e))
         sock.connect((bdaddr, channel))
         sock.settimeout(None)
     except OSError as e:
@@ -1644,11 +1735,9 @@ def _av_out_session(harness, bdaddr, tag, channel):
     harness.log("note", event="av_out_connected", channel=tag, chan=channel, bdaddr=bdaddr)
     print(f"\n[av-out {tag}] *** CONNECTED to head unit {bdaddr} ch{channel} — dialed AV channel! ***")
 
-    hyp = harness.current
     do_handshake = (appmode is not None and hyp is not None
                     and getattr(hyp, "av_spp_handshake", False)
                     and tag in getattr(hyp, "av_spp_channels", ()))
-    b2_sent = False
     if do_handshake:
         # The two plaintext control frames the head unit's HNiAPAuth waits for (HONDALINK_APP_PROTOCOL.md):
         # Session Start (id 0x00 / payload [01 01]) then Auth Request (id 0x00 / payload [00]).
@@ -1661,25 +1750,7 @@ def _av_out_session(harness, bdaddr, tag, channel):
         _av_spp_send(harness, sock, tag, auth_request, "AuthRequest")
 
     try:
-        while True:
-            try:
-                chunk = sock.recv(4096)
-            except OSError as e:
-                harness.log("note", event="av_out_recv_error", channel=tag, error=str(e))
-                break
-            if not chunk:
-                break
-            harness.log("rx", note="av_out", channel=tag, raw=chunk.hex())
-            print(f"  [av-out {tag} rx] {len(chunk)} bytes: {chunk.hex()[:100]}")
-            _log_dataparts(harness, tag, "rx", chunk)
-            # Answer a 0xB1 StartAuth with a best-effort 0xB2 on THIS SPP socket (the correct transport).
-            if do_handshake and not b2_sent and appmode is not None:
-                for f in appmode.parse_frames(chunk):
-                    if f.pack_id == 0xB1:
-                        frame = harness._build_b2_frame(f.payload, source=f"spp:{tag}")
-                        if frame is not None and _av_spp_send(harness, sock, tag, frame, "0xB2 AuthResponse"):
-                            b2_sent = True
-                        break
+        _av_spp_recv_loop(harness, sock, tag, "av_out", answer_b1=do_handshake)
     finally:
         harness.log("note", event="av_out_closed", channel=tag)
         print(f"[av-out {tag}] closed")
@@ -1728,18 +1799,10 @@ def data_channel_session(harness, tag, fd, device):
     harness.log("note", event="datachan_connected", channel=tag, device=str(device))
     harness.mark_phase("av_inbound_dial", channel=tag, device=str(device))
     print(f"\n[datachan {tag}] *** CONNECTED from {device} — head unit opened the AV/data channel! ***")
+    # If the HU dialed US (host-only path), it is the AppMode client and drives the handshake (0xB1 first,
+    # AppMode.md §7). Answer a 0xB1 with a best-effort 0xB2 on this inbound socket, same as the outbound path.
     try:
-        while True:
-            try:
-                chunk = sock.recv(4096)
-            except OSError as e:
-                harness.log("note", event="datachan_recv_error", channel=tag, error=str(e))
-                break
-            if not chunk:
-                break
-            harness.log("rx", note="datachan", channel=tag, raw=chunk.hex())
-            print(f"  [datachan {tag} rx] {len(chunk)} bytes: {chunk.hex()[:100]}")
-            _log_dataparts(harness, tag, "rx", chunk)
+        _av_spp_recv_loop(harness, sock, tag, "datachan", answer_b1=(appmode is not None))
     finally:
         harness.log("note", event="datachan_closed", channel=tag, device=str(device))
         print(f"[datachan {tag}] closed")
