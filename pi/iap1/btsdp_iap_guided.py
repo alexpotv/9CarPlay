@@ -455,159 +455,52 @@ _FULL_INIT = dict(cert_section_mode="ack_transid", auth_transid=True,
                   auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
                   ei_nowplaying_returns=True)
 
-# ROUND 42 — variant of _FULL_INIT that authenticates in the REAL iPhone order: IDPS fully completes
-# (EndIDPS -> we send IDPSStatus) BEFORE device authentication starts. hondalink/7 showed sending our
-# GetDevAuthenticationInfo (0x14) right after the FID tokens (auth_trigger="after_fidtokens") leaves the
-# head unit stalled ~18s before it sends EndIDPS — an out-of-order init a real phone never produces, and
-# a likely source of a non-zero init Err (OnRN_iPod_NotifyInitialize) that fails the app-auth gate.
-_FULL_INIT_ENDIDPS = {**_FULL_INIT, "auth_trigger": "after_endidps"}
-
+# ---------------------------------------------------------------------------------------------
+# HYPOTHESES — Phase 1 of references/cr-v/IMPLEMENTATION_PLAN.md: complete the L4 identity auth.
+# The full history of exhausted probes (Z2/EA1/EA2/DP1/DP2/DP5/G_*/IDPS_*) lives in git + the memory
+# log (references .../memory/9carplay-connection-state.md). They ruled out: transport(SPP)/framing/
+# direction/BDaddr/timing/auth-ordering/options. The open item: the app identity-auth over the iAP EA
+# session was never tested with the CORRECTED length framing (DP1/DP2 used the old broken checkByte
+# framing). These hypotheses drive Session Start + Auth Request to elicit a 0xB1 StartAuth, then answer
+# with a full six-field 0xB2 identity blob (CommBase::IsAuthInfoAllExist). See APPLICATION_LAYER.md.
 HYPOTHESES = [
     Hypothesis(
-        "Z2", "CONTROL: full iAP init to the HondaLink app-launch stage",
-        "The complete, RE-derived iAP1-over-BT init the head unit needs: proven MFi auth (transID'd "
-        "cert->challenge->status), then it answers EVERY post-auth request the head unit's sequencer "
-        "waits on — General device-info (name/version/model via REQUEST_HANDLERS), Extended-Interface "
-        "NowPlaying Gets (0x1c GetPlayStatus->0x1d, 0x2c GetShuffle->0x2d, 0x2f GetRepeat->0x30, all "
-        "empty/stopped) and DB-records (0x18 GetNumberCategorizedDBRecords->0x19 count=0), ACKing the "
-        "Sets/EI setup. This carries the head unit through NowPlaying + SystemInit DB setup to the "
-        "point where it auto-launches the HondaLink app (RequestAutoStartApp). NO app emulation — the "
-        "control that reproduces the milestone.",
-        "One clean connection attempt (no teardown/retry) that runs to the app-launch stage: on the "
-        "screen, the 'app not installed / get it from the App Store' message (not a Bluetooth or "
-        "'cannot launch' error). The namer names any NEW request if the head unit asks for more.",
-        **_FULL_INIT),
-    Hypothesis(
-        "EA1", "STEP B: announce HondaLink app via OpenDataSessionForProtocol (hondalink idx2)",
-        "Z2's full init PLUS the step-B app-presence emulation: when the head unit reaches the "
-        "app-launch stage (first General device-info request), the Pi sends OpenDataSessionForProtocol "
-        "(General Lingo 0x3F) for the EA protocol 'jp.co.honda.rd.dispaudio.app.hondalink' (index 0x02, "
-        "read live from the head unit's own SetFIDTokenValues). On a real iPhone this is the message "
-        "iOS sends when the HondaLink app opens its EASession; it is what makes the head unit register "
-        "the app (SetServerVRAppData) instead of declaring it missing. Since the Pi controls the phone "
-        "side, we synthesize it.",
-        "The 'app not installed / App Store' message does NOT appear (or changes). Best case: the head "
-        "unit registers the app and DIALS av1/av2 (av_inbound_dial) and/or sends a new app-launch / "
-        "OpenDataSession response / RequestIAppLaunch command. Any change vs Z2 is signal — the namer "
-        "and phase checklist capture whatever the head unit does next.",
+        "BASE", "CONTROL: full iAP init + announce HondaLink app (no auth kick)",
+        "The proven full iAP1-over-BT init (IDPS+MFi+EI+SystemInit) PLUS OpenDataSessionForProtocol for "
+        "the hondalink app. No DataParts auth is driven. Baseline: confirms we still reach the app-launch "
+        "stage and reproduces the 'app missing' state that the auth hypotheses must clear.",
+        "Runs clean to the app-launch stage; head unit shows 'HondaLink app missing'. Any A* hypothesis "
+        "that changes this is real signal.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
         **_FULL_INIT),
     Hypothesis(
-        "EA2", "STEP B: announce BOTH HondaLink EA protocols (general idx1 + hondalink idx2)",
-        "Same as EA1, but opens data sessions for BOTH of the HondaLink app's declared protocols — "
-        "'...app.general' (index 0x01) and '...app.hondalink' (index 0x02) — since the app declares "
-        "both under the same bundle seed (TX6J99784P) and the head unit may want the pair before it "
-        "treats the app as fully present.",
-        "As EA1. If EA1 alone didn't satisfy the head unit but EA2 does, the head unit needed the full "
-        "protocol set announced, not just the hondalink one.",
-        ea_open_session=True, ea_open_protocols=("general", "hondalink"),
-        ea_open_trigger="device_info", **_FULL_INIT),
-    Hypothesis(
-        "DP1", "STEP C: drive HNiAPAuth — SessionStart + AuthRequest (opcode 0x41)",
-        "Full init + app announce, then the RE-derived HondaLink app handshake "
-        "(references/cr-v/HONDALINK_APP_PROTOCOL.md): over the open EA session we send the two "
-        "plaintext DataParts control frames the head unit waits for — Session Start (id 0x00 / payload "
-        "[01 01]) then Auth Request (id 0x00 / payload [00]) — wrapped in iPodDataTransfer (opcode "
-        "0x41). Per the firmware the Auth Request makes the head unit's HNiAPAuth send its StartAuth "
-        "(0xB1) reply. Every inbound packet is scanned for DataParts frames; a 0xB1 is logged with its "
-        "nonce and best-effort answered with 0xB2.",
-        "PRIMARY WIN: a DataParts 0xB1 StartAuth arrives on the iAP channel ([dataparts RX ... 0xB1]) — "
-        "the app protocol on the wire for the first time — then 0xB3 AuthFin / the app rendering over "
-        "HDMI. 'No 0xB1' means opcode 0x41 is wrong; run DP2 (opcode sweep).",
+        "A2_EA_SWEEP", "PHASE 1: elicit 0xB1 over the iAP EA session — sweep opcodes (corrected framing)",
+        "THE priority test. Drive the app identity-auth on the iAP EA session (iPodDataTransfer), the "
+        "bearer HNiAPAuth::OnRecvDataFromIAppEvent actually reads (IApp = ADCL_iAP_AplReceiveAppData). "
+        "Send Session Start (00/[01 01]) + Auth Request (00/[00]) as length-framed DataParts, swept over "
+        "candidate opcodes 0x41/0x42/0x40/0x43 in one connection (the opcode was never validly tested — "
+        "DP1/DP2 used the old broken checkByte framing). On an inbound 0xB1 (any bearer) we answer with a "
+        "full six-field 0xB2.",
+        "PRIMARY WIN: a DataParts 0xB1 StartAuth is captured ([dataparts RX ... 0xB1]) — the auth engaging "
+        "on the iAP EA bearer for the first time, with its nonce. The btmon shows which opcode preceded it. "
+        "No 0xB1 => the auth is not initiated by our frames on this bearer -> Phase 1b RE.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        dataparts_session=True, dp_ipod_transfer_cmd=0x41, **_FULL_INIT),
+        dataparts_session=True, dp_opcode_sweep=(0x41, 0x42, 0x40, 0x43), dp_auto_b2=True, **_FULL_INIT),
     Hypothesis(
-        "DP2", "STEP C: drive HNiAPAuth — sweep iPodDataTransfer opcodes 0x41/0x42/0x40/0x43",
-        "Same handshake as DP1, but sends the SessionStart+AuthRequest pair over several candidate "
-        "transport opcodes in one connection (0x41, 0x42, 0x40, 0x43) to find the app-data wire opcode "
-        "empirically — the one value that couldn't be pinned statically. The head unit ignores "
-        "unrecognized opcodes cleanly, so whichever one elicits a 0xB1 is the correct transport.",
-        "A 0xB1 StartAuth appears — and the btmon/log show which opcode's iPodDataTransfer preceded it. "
-        "That confirms the transport; DP1 can then be re-pinned to that opcode.",
+        "A1_EA_AUTH", "PHASE 1: elicit 0xB1 over the iAP EA session — opcode 0x41 (corrected framing)",
+        "Same as A2_EA_SWEEP but pinned to iPodDataTransfer opcode 0x41 (the iAP1 standard app-data "
+        "opcode). Run after A2 has identified the working opcode, or to isolate 0x41 specifically.",
+        "A 0xB1 StartAuth arrives on the iAP channel; then we answer 0xB2 and watch for 0xB3.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        dataparts_session=True, dp_opcode_sweep=(0x41, 0x42, 0x40, 0x43), **_FULL_INIT),
+        dataparts_session=True, dp_ipod_transfer_cmd=0x41, dp_auto_b2=True, **_FULL_INIT),
     Hypothesis(
-        "DP5", "STEP C, CORRECTED TRANSPORT: drive AppMode auth over av1/av2 SPP (not iAP EA)",
-        "hondalink/3 resolved the transport: the head unit IGNORED the DataParts handshake on every iAP "
-        "iPodDataTransfer opcode (DP1/DP2), but ACCEPTED our av1/av2 SPP dials and then DISC'd ~1.2s later "
-        "because we sent ZERO bytes on them — it waits for the phone's first AppMode frame on the SPP "
-        "socket (AppMode.md §1/§8: the 0xB1/0xB2/0xB3 auth rides av1/av2 SPP, not the iAP channel). This "
-        "hypothesis keeps the EA app-announce (OpenDataSessionForProtocol, which made the head unit treat "
-        "the app as present) but moves the handshake to the SPP socket: right after the av1/av2 dial we "
-        "push SessionStart (id 0x00/[01 01]) + AuthRequest (id 0x00/[00]) on the SPP channel(s), then "
-        "answer a 0xB1 StartAuth with a best-effort 0xB2 on the same socket.",
-        "PRIMARY WIN: the av1/av2 SPP channel STAYS UP past ~1.2s (no DISC) and/or a DataParts 0xB1 "
-        "StartAuth arrives on it ([dataparts av1 rx] / [av-out av1 rx]) — the AppMode auth on the wire for "
-        "the first time. Even 'channel stays open longer' is signal that the first frame was accepted. If "
-        "it still DISC's immediately, the first-frame format/subtype is wrong (not the transport).",
+        "A3_SPP_AUTH", "PHASE 1: comparison — drive the auth over av1/av2 SPP (full six-field 0xB2)",
+        "Comparison bearer. Same handshake but over the av1/av2 SPP channels (DP5 got head-unit responses "
+        "there). Sends Session Start + Auth Request on the SPP socket and answers a 0xB1 with the full "
+        "six-field 0xB2. Distinguishes whether the auth engages on SPP vs the iAP EA session.",
+        "The av1/av2 SPP stays up past ~1.27s and/or a 0xB1 arrives on it ([av-out av1 rx ... 0xB1]). "
+        "Compared with A1/A2 this tells us which bearer carries HNiAPAuth.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        av_spp_handshake=True, av_spp_channels=("av1", "av2"), **_FULL_INIT),
-    # ---- ROUND 39: probes for the NotifyStartSmartPhoneApps gate (hondalink/5 diagnosis). Framing is now
-    # correct (HU accepts our frames), but the HU tears down the SPP at a fixed ~1.27s and NEVER dials us.
-    # The gate FUN_00078608 success path (HU dials the phone's av1/av2) is behind guards: conn-mode∈{2,3},
-    # m_pLPALMIf, GetBDAddress!=NULL/≠0, m_pAuthInfo!=NULL. Each hypothesis below isolates one suspicion.
-    Hypothesis(
-        "G_HOST", "GATE-B: host-only — do NOT dial av1/av2; wait for the HU to dial US",
-        "Every prior round DIALED the HU's av1/av2 server. In the production flow the HU dials the PHONE "
-        "(LPALinkManager VS_SPP1 / RequestConnectAvSpp), and the ConApp validates the connection's BDaddr "
-        "against m_BDAddress. Our outbound dial may occupy those channels / trip that match so the HU never "
-        "makes its own connection. This hypothesis does full init + app announce but does NOT dial out — it "
-        "only HOSTS av1/av2 (DataChannelProfile) and waits. If the gate otherwise passes, the HU should dial "
-        "US.",
-        "*** av_inbound_dial ticks — the head unit DIALS our av1/av2 *** (the AppMode AV connect on the "
-        "correct, HU-initiated direction). Then DataParts 0xB1 should arrive on that inbound channel. If the "
-        "HU still never dials, the gate fails upstream of the SPP (m_pAuthInfo / conn-mode), not on direction.",
-        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        av_dial_mode="host_only", **_FULL_INIT),
-    Hypothesis(
-        "G_LATE", "GATE-A: dial av1/av2 much later (EI+6s) so AppMode/m_pAuthInfo latches first",
-        "The gate needs m_pAuthInfo != NULL (set when NotifyIOSAuthEvent fires 'AppMode Active' after auth). "
-        "We currently dial ~1.5s after EI — possibly before AppMode goes Active, so the gate sees "
-        "m_pAuthInfo NULL and the HU tears the SPP down. This hypothesis is identical to DP5 but delays the "
-        "outbound dial + SPP handshake to EI+6s, giving the auth-complete event time to latch.",
-        "The av1/av2 SPP STAYS UP past ~1.27s and/or a 0xB1 StartAuth arrives — i.e. the earlier teardown was "
-        "a timing race with AppMode-Active, not a hard auth failure. No change ⇒ m_pAuthInfo is a genuine "
-        "gate, not a race.",
-        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        av_spp_handshake=True, av_spp_channels=("av1", "av2"), av_dial_delay=6.0, **_FULL_INIT),
-    Hypothesis(
-        "G_BIND", "GATE-B: bind the outbound SPP dial to our local adapter (BDaddr match)",
-        "The HU's ConApp rejects an app connection whose BDaddr != m_BDAddress ('IAP_BT BDAdder Not match'). "
-        "Identical to DP5 but binds the outbound av1/av2 sockets to our local adapter address before connect, "
-        "so the source BDaddr the HU associates with the app connection is unambiguous and matches the iAP "
-        "link's address.",
-        "SPP stays up / 0xB1 arrives where plain DP5 was torn down ⇒ the BDaddr match was the gate. No change "
-        "⇒ BDaddr wasn't the failing guard.",
-        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        av_spp_handshake=True, av_spp_channels=("av1", "av2"), av_spp_bind_local=True, **_FULL_INIT),
-    # ---- ROUND 42: Option-1 (init completion) probes. RE (Option 2) confirmed the app-auth gate
-    # (NotifyStartSmartPhoneApps guards 1/5) is fed by the iPod-init result OnRN_iPod_NotifyInitialize
-    # (ConnectType/AuthType/Err) — not BDaddr/direction/timing (all empirically ruled out). So the lever
-    # is the init itself. hondalink/7 exposed two divergences from a real iPhone: (a) we auth out-of-order
-    # (0x14 mid-IDPS) → 18s stall; (b) near-zero iPodOptions capability masks.
-    Hypothesis(
-        "IDPS_ORDER", "OPT-1a: authenticate in real iPhone order (device auth AFTER EndIDPS)",
-        "Identical to DP5 (full init + app announce + av1/av2 SPP handshake) but sends "
-        "GetDevAuthenticationInfo (0x14) only AFTER the head unit's EndIDPS + our IDPSStatus, matching the "
-        "real iAP1 order (IDPS completes, THEN authentication). hondalink/7 showed our current "
-        "'after_fidtokens' auth injects 0x14 mid-IDPS and the head unit then stalls ~18s before EndIDPS — an "
-        "out-of-order init that plausibly yields a non-zero init Err and fails the app-auth gate.",
-        "The ~18s pre-EndIDPS stall SHRINKS/vanishes AND the av1/av2 SPP stays up past ~1.27s / the head unit "
-        "sends 0xB1 or dials us — i.e. a clean, correctly-ordered init flips the gate. If the stall persists, "
-        "the 18s is a head-unit timer independent of our auth ordering.",
-        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        av_spp_handshake=True, av_spp_channels=("av1", "av2"), **_FULL_INIT_ENDIDPS),
-    Hypothesis(
-        "IDPS_MAXOPT", "OPT-1b: declare broad iPod capabilities (richer RetiPodOptionsForLingo masks)",
-        "Identical to DP5 but returns richer per-lingo option bitmasks instead of near-zero. We currently "
-        "advertise only General bit 0x2000 (iPhone-OS apps) and ZERO for every other lingo; a real iPhone "
-        "declares many capability bits. If the head unit derives the connected device's AuthType/capability "
-        "(and thus the app-auth gate) partly from these masks, under-declaring them limits it. Sets General "
-        "+ all lingoes to a broad low-bit mask as a capability probe.",
-        "SPP stays up / 0xB1 / HU dials us where plain DP5 didn't ⇒ the capability masks were part of the "
-        "gate. No change ⇒ options aren't the lever (the init Err/ordering is).",
-        ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        general_options=0x000000000000FFFF, other_lingo_options=0x000000000000FFFF,
         av_spp_handshake=True, av_spp_channels=("av1", "av2"), **_FULL_INIT),
 ]
 
@@ -942,11 +835,12 @@ class Harness:
         return out
 
     def _build_b2_frame(self, b1_payload, source="spp"):
-        """Best-effort RAW 0xB2 AuthResponse DataParts frame for a received 0xB1. The nonce/info/identity
-        -blob layout aren't firmware-pinned (AppMode.md §7), so this is a PROBE: derive the key from a
-        candidate nonce (the 4 bytes after the 0xB1 subtype, if present), encrypt a plausible identity
-        blob, and frame it. Returns the bare 9F02..9F03 frame bytes (transport-agnostic) or None. The
-        head unit's reaction (0xB3 vs re-0xB1 vs teardown) tells us whether the guesses are right."""
+        """RAW 0xB2 AuthResponse DataParts frame for a received 0xB1, carrying the SIX identity fields the
+        head unit's CommBase::IsAuthInfoAllExist (FUN_000d1dbc) requires — ManufactureName, ModelName,
+        AppID, OSVer, IndividualInfo, AppVer (all non-empty). See APPLICATION_LAYER.md §4.1. The nonce/info
+        for key derivation and the exact on-wire field encoding inside the encrypted 0xB2 are still a PROBE
+        (IMPLEMENTATION_PLAN.md Phase 2): the immediate goal is to elicit the head unit's reaction (0xB3 vs
+        re-0xB1 vs teardown) and iterate from a real 0xB1 nonce. Returns bare 9F02..9F03 bytes, or None."""
         if appmode is None:
             return None
         # candidate nonce: 0xB1 payload is subtype(1) [+ nonce(4)] per AppMode.md taxonomy (id 0xB1,
@@ -954,26 +848,34 @@ class Harness:
         p = b1_payload
         nonce = p[1:5] if len(p) >= 5 else b"\x00\x00\x00\x00"
         key = appmode.derive_key(nonce, info=b"")
-        # plausible identity blob (length-prefixed fields; layout UNCONFIRMED — a probe). Order per
-        # ROUND 18: ManufactureName, ModelName, OSVersion, IndividualInfo, AppVersion, AppId.
+
         def lp(s):
             b = s.encode() if isinstance(s, str) else s
             return bytes([len(b)]) + b
-        blob = (lp("Apple") + lp("iPhone") + lp("7.0") + lp("0000")
-                + lp("1.0") + lp("jp.co.honda.rd.dispaudio.app.hondalink"))
+        # The six IsAuthInfoAllExist fields, in the order the parser reads them (ManufactureName, ModelName,
+        # AppID, OSVer, IndividualInfo, AppVer), preceded by the status byte CreateAuthFinResponseData
+        # checks (param_2+8 == 1). Field encoding is length-prefixed (UNCONFIRMED — Phase-2 item).
+        blob = (bytes([0x01])                                       # status (==1 gates CreateCryptKey)
+                + lp("Apple")                                       # ManufactureName
+                + lp("iPhone")                                      # ModelName
+                + lp("jp.co.honda.rd.dispaudio.app.hondalink")      # AppID (bundle id)
+                + lp("7.0")                                         # OSVer
+                + lp("0000000000000001")                            # IndividualInfo (per-device token)
+                + lp("1.0.0"))                                      # AppVer
         ct = appmode.aes_cbc_encrypt(key, blob)
-        b2_payload = bytes([0x00]) + ct     # subtype 0x00 + ciphertext (best-effort)
+        b2_payload = bytes([0x00]) + ct     # subtype 0x00 + ciphertext
         frame = appmode.build_frame(0xB2, b2_payload)
         self.log("note", event="dp_b2_built", source=source, nonce=nonce.hex(),
                  key=key.hex(), blob=blob.hex(), frame=frame.hex())
-        print(f"  [dp] best-effort 0xB2 AuthResponse ({source}): nonce={nonce.hex()} key={key.hex()} "
-              f"({len(frame)}B frame) — PROBE, format unconfirmed")
+        print(f"  [dp] 0xB2 AuthResponse ({source}): nonce={nonce.hex()} key={key.hex()} "
+              f"6-field identity, {len(frame)}B frame — encoding is a Phase-2 probe")
         return frame
 
     def _build_b2_response(self, b1_frame):
-        """DEPRECATED iAP-EA transport (hondalink/3 proved the head unit ignores DataParts on the iAP
-        channel). Kept so the legacy DP1/DP2 inbound path still answers a 0xB1 if one ever arrives there.
-        The live transport is now av1/av2 SPP — see _av_out_session / av_spp_handshake. Sent once."""
+        """0xB2 AuthResponse wrapped for the iAP EA session (iPodDataTransfer). PHASE 1 (A1/A2): this is
+        the priority bearer — HNiAPAuth::OnRecvDataFromIAppEvent reads app data from the iAP EA session,
+        and it was never tested with the corrected length framing (DP1/DP2 used the broken checkByte
+        framing). Builds the six-field 0xB2 via _build_b2_frame and sends it as iPodDataTransfer. Once."""
         with self.lock:
             if self.dp_b2_sent or self.ea_session_id is None:
                 return None
