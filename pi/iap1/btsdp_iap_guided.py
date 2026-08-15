@@ -805,8 +805,8 @@ class Harness:
         if appmode is None:
             print("  [dp] appmode_proto unavailable — cannot build DataParts frames")
             return []
-        session_start = appmode.build_frame(0x00, bytes([0x01, 0x01]))   # 9F 02 00 00 01 01 9F 03
-        auth_request = appmode.build_frame(0x00, bytes([0x00]))          # 9F 02 00 00 00 9F 03
+        session_start = appmode.build_frame(0x00, bytes([0x01, 0x01]))   # 9F 02 00 02 01 01 9F 03
+        auth_request = appmode.build_frame(0x00, bytes([0x00]))          # 9F 02 00 01 00 9F 03
         opcodes = list(hyp.dp_opcode_sweep) if hyp.dp_opcode_sweep else [hyp.dp_ipod_transfer_cmd]
         pkts = []
         for op in opcodes:
@@ -1652,8 +1652,8 @@ def _av_out_session(harness, bdaddr, tag, channel):
     if do_handshake:
         # The two plaintext control frames the head unit's HNiAPAuth waits for (HONDALINK_APP_PROTOCOL.md):
         # Session Start (id 0x00 / payload [01 01]) then Auth Request (id 0x00 / payload [00]).
-        session_start = appmode.build_frame(0x00, bytes([0x01, 0x01]))
-        auth_request = appmode.build_frame(0x00, bytes([0x00]))
+        session_start = appmode.build_frame(0x00, bytes([0x01, 0x01]))   # 9F 02 00 02 01 01 9F 03
+        auth_request = appmode.build_frame(0x00, bytes([0x00]))          # 9F 02 00 01 00 9F 03 (== HU's frame)
         harness.log("note", event="av_spp_handshake", channel=tag,
                     session_start=session_start.hex(), auth_request=auth_request.hex())
         print(f"[av-out {tag}] driving AppMode handshake over SPP (SessionStart + AuthRequest)")

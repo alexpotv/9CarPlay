@@ -97,23 +97,39 @@ def _escape(body: bytes) -> bytes:
 
 
 def build_frame(pack_id: int, payload: bytes) -> bytes:
-    """Serialize one DataParts frame: 9F 02 | id | check | payload | 9F 03 (with 9F escaping)."""
-    body = bytes([pack_id & 0xFF, check_byte(pack_id, payload)]) + bytes(payload)
+    """Serialize one DataParts frame: 9F 02 | id | length | payload | 9F 03 (with 9F escaping).
+
+    ROUND 37 CORRECTION (hondalink/4, live): byte[1] is the payload LENGTH, not a checkByte. The head
+    unit's own valid frame `9F 02 00 01 00 9F 03` = id 0x00, len 1, payload [0x00] — which cannot satisfy
+    checkByte=XOR(id,payload)=0x00. The firmware serializer adds a length (PUP_AddDataLength); the real
+    checkByte (FUN_0016fc0c, XOR(id,payload)) is carried INSIDE the plaintext of encrypted frames (§3),
+    not as this wire field. Our earlier checkByte-in-byte[1] framing made the head unit read length=0 and
+    reject every frame (it replied once then DISC'd). Length is 1 byte here (all observed/needed payloads
+    are <256 B; revisit if a >255 B frame ever appears)."""
+    payload = bytes(payload)
+    body = bytes([pack_id & 0xFF, len(payload) & 0xFF]) + payload
     return FRAME_START + _escape(body) + FRAME_END
 
 
 @dataclass
 class Frame:
     pack_id: int
-    check: int              # checkByte as read from the wire
+    check: int              # wire byte[1] — the payload LENGTH (ROUND 37); kept as `check` for callers
     payload: bytes          # unescaped payload (still ciphertext if the message is encrypted)
     raw: bytes              # the exact on-wire bytes of this frame (incl. markers)
     direction: str = ""     # "TX"/"RX"/"" if known (filled by capture tooling)
     offset: int = 0         # byte offset in the source stream
 
     @property
+    def length(self) -> int:
+        """The declared payload length (wire byte[1])."""
+        return self.check
+
+    @property
     def check_ok(self) -> bool:
-        return self.check == check_byte(self.pack_id, self.payload)
+        """Well-formed = the declared length matches the actual payload length (ROUND 37: byte[1] is a
+        length, not a checkByte). Kept named check_ok so existing logging stays valid."""
+        return self.check == len(self.payload)
 
     @property
     def name(self) -> str:
@@ -121,9 +137,9 @@ class Frame:
 
     def describe(self) -> str:
         d = f"[{self.direction}] " if self.direction else ""
-        ck = "ok" if self.check_ok else f"BAD(calc {check_byte(self.pack_id, self.payload):02x})"
-        return (f"{d}{self.name:<16} id=0x{self.pack_id:02x} check=0x{self.check:02x}({ck}) "
-                f"len={len(self.payload)} payload={self.payload.hex()}")
+        ck = "ok" if self.check_ok else f"BAD(len byte 0x{self.check:02x} vs {len(self.payload)})"
+        return (f"{d}{self.name:<16} id=0x{self.pack_id:02x} len=0x{self.check:02x}({ck}) "
+                f"payload={self.payload.hex()}")
 
 
 def parse_frames(stream: bytes):
@@ -391,7 +407,11 @@ def selftest() -> bool:
     check("frame build/parse round trip", len(frames) == 1 and frames[0].payload == payload
           and frames[0].pack_id == 0xB2 and frames[0].check_ok)
 
-    # checkByte
+    # ROUND 37: length-prefixed framing matches the head unit's live frame exactly
+    check("AuthRequest matches HU frame", build_frame(0x00, b"\x00") == bytes.fromhex("9f020001009f03"))
+    check("frame byte[1] is payload length", frames[0].length == len(payload))
+
+    # checkByte (internal plaintext integrity, §3 — no longer the wire byte[1])
     check("checkByte XOR", check_byte(0xB1, b"\x00") == (0xB1 ^ 0x00))
 
     # known key derivation is stable

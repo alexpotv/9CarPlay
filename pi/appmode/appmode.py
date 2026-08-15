@@ -50,8 +50,9 @@ def cmd_const(args):
     print(f"  passphrase (AES key material) : {ap.PASSPHRASE!r}  ({ap.PASSPHRASE.hex()})")
     print(f"  cipher                        : AES-128-CBC, zero IV, PKCS7")
     print(f"  key derivation                : MD5( passphrase || nonce(4B big-endian) || info )")
-    print(f"  frame                         : 9F 02 | id | checkByte | payload | 9F 03  (0x9F doubled)")
-    print(f"  checkByte                     : id XOR payload[0..n-1]")
+    print(f"  frame                         : 9F 02 | id | length | payload | 9F 03  (0x9F doubled)")
+    print(f"  length                        : payload byte count (1 byte, wire byte[1]; ROUND 37)")
+    print(f"  checkByte                     : id XOR payload[0..n-1]  (inside plaintext, §3 — NOT on wire)")
     print(f"  valid PackDataIds             : {{{', '.join(f'0x{i:02x}' for i in sorted(ap.VALID_IDS))}}}")
     print(f"  auth opcodes                  : 0xB1 StartAuth(HU->phone), 0xB2 AuthResponse(phone->HU), "
           f"0xB3 AuthFin(HU->phone)")
@@ -122,7 +123,8 @@ def cmd_build(args):
     frame = ap.build_frame(pid, payload)
     print(f"id       : 0x{pid:02x} ({ap.classify(pid, payload)})")
     print(f"payload  : {payload.hex() or '(empty)'}")
-    print(f"checkByte: 0x{ap.check_byte(pid, payload):02x}")
+    print(f"length   : 0x{len(payload):02x}   (wire byte[1], ROUND 37)")
+    print(f"checkByte: 0x{ap.check_byte(pid, payload):02x}   (internal plaintext integrity, §3 — NOT on wire)")
     print(f"on-wire  : {frame.hex()}")
 
 
