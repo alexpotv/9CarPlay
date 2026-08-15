@@ -741,6 +741,7 @@ class Harness:
             self.ea_session_id = None
             self.dp_kicked = False
             self.dp_b2_sent = False
+            self.av_out_started = False   # per-window: the outbound AV dial is one-shot PER hypothesis
             self._stall_reported = False
             if self._silence_timer:
                 self._silence_timer.cancel()
