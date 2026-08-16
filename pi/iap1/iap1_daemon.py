@@ -571,20 +571,23 @@ def parse_fid_token_values(payload: bytes):
 
 def build_ret_fid_token_value_acks(trans_id: int, token_fields) -> bytes:
     """Acks every received FIDTokenValues field. Each FIDTokenValueACK is 4 bytes:
-    **[ACKLength=3][ACKResult=0x00][FIDTokenType][FIDTokenSubtype]** — the result byte comes FIRST,
-    then the token's type/subtype (iAP1 IDPS spec).
+    **[ACKLength=3][FIDTokenType][FIDTokenSubtype][ACKResult=0x00]** — type/subtype first, RESULT LAST
+    (iAP1 IDPS spec, Table 2-83).
 
-    ROUND 50 fix (logdump/3 RE): we previously emitted [len=3][type][subtype][result=0] — result LAST.
-    That swaps type<->subtype for every non-symmetric token under the head unit's [result][type][subtype]
-    reader, so the accessory couldn't match its own tokens and rejected our whole 0x3A packet:
-    `iACS_receive_command (recv_switch NG) er[-5] commandID[3A]` in the HU log (present on every Pi run,
-    absent when no Pi is connected). This mangled IDPS is the upstream cause of `Max_Packet_Size[0]` and
-    the eventual app-launch timeout — see references/cr-v/IMPLEMENTATION_PLAN.md Phase 1.5.
+    History (do not re-flip without reading this):
+    - The original code had this correct order. ROUND 50 mis-diagnosed a `commandID[3A] recv NG er[-5]`
+      as a byte-order bug and flipped result to the front — WRONG. The recv-NG was actually caused by the
+      poisoned IDPS FSM from our NG reply to command 0x11 (`iPodAck NG ack_result[5]`); fixing 0x11 (ROUND
+      50/52) is what cleared the recv-NG, not the flip.
+    - ROUND 52 (logdump/6) proved the flip wrong: the HU logged `EAProtocolToken[0] AckStatus[4]` /
+      `BundleSeedIDPrefToken AckStatus[5]` — the AckStatus it read for each token EQUALS that token's
+      subtype, i.e. it reads the result from the LAST byte, which the flip had filled with the subtype.
+      Reverted here so the last byte is 0x00 (success) for every token.
 
     We always accept (result 0x00) — as the "iPod" role we decide what counts as valid identification."""
     payload = bytes([(trans_id >> 8) & 0xFF, trans_id & 0xFF, len(token_fields)])
     for info1, info2, _data in token_fields:
-        payload += bytes([0x03, 0x00, info1, info2])   # [len=3][result=0][type][subtype]
+        payload += bytes([0x03, info1, info2, 0x00])   # [len=3][type][subtype][result=0]
     return build_packet(LINGO_GENERAL, CMD_RET_FID_TOKEN_VALUE_ACKS, payload)
 
 
