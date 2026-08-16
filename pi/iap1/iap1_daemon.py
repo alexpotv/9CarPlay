@@ -570,13 +570,21 @@ def parse_fid_token_values(payload: bytes):
 
 
 def build_ret_fid_token_value_acks(trans_id: int, token_fields) -> bytes:
-    """Acks every received FIDTokenValues field with a generic success ACK (spec Table 2-83's
-    4-byte shape: [length=3, infoByte1, infoByte2, ACKStatus=0]). We always accept — as the "iPod"
-    role, we're the one deciding what counts as valid identification, and nothing external is
-    checking our judgment; see module docstring."""
+    """Acks every received FIDTokenValues field. Each FIDTokenValueACK is 4 bytes:
+    **[ACKLength=3][ACKResult=0x00][FIDTokenType][FIDTokenSubtype]** — the result byte comes FIRST,
+    then the token's type/subtype (iAP1 IDPS spec).
+
+    ROUND 50 fix (logdump/3 RE): we previously emitted [len=3][type][subtype][result=0] — result LAST.
+    That swaps type<->subtype for every non-symmetric token under the head unit's [result][type][subtype]
+    reader, so the accessory couldn't match its own tokens and rejected our whole 0x3A packet:
+    `iACS_receive_command (recv_switch NG) er[-5] commandID[3A]` in the HU log (present on every Pi run,
+    absent when no Pi is connected). This mangled IDPS is the upstream cause of `Max_Packet_Size[0]` and
+    the eventual app-launch timeout — see references/cr-v/IMPLEMENTATION_PLAN.md Phase 1.5.
+
+    We always accept (result 0x00) — as the "iPod" role we decide what counts as valid identification."""
     payload = bytes([(trans_id >> 8) & 0xFF, trans_id & 0xFF, len(token_fields)])
     for info1, info2, _data in token_fields:
-        payload += bytes([0x03, info1, info2, 0x00])
+        payload += bytes([0x03, 0x00, info1, info2])   # [len=3][result=0][type][subtype]
     return build_packet(LINGO_GENERAL, CMD_RET_FID_TOKEN_VALUE_ACKS, payload)
 
 

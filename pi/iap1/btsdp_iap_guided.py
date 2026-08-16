@@ -461,7 +461,13 @@ class Hypothesis:
 # the step-B app-presence emulation on top of exactly this.
 _FULL_INIT = dict(cert_section_mode="ack_transid", auth_transid=True,
                   auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
-                  ei_nowplaying_returns=True)
+                  ei_nowplaying_returns=True,
+                  # ROUND 50 (logdump/3 RE): the HU logs `iPodAck(General) NG ack_result[5]
+                  # command_id[11]` — that's our own status-0x05 ("unknown ID") reply to command 0x11.
+                  # Stop NG'ing it (status 0x00). Paired with the RetFIDTokenValueACKs (0x3A) byte-order
+                  # fix in iap1_daemon.build_ret_fid_token_value_acks; together these target the two
+                  # iACS IDPS errors that leave Max_Packet_Size[0] and time out the app session.
+                  opt11_mode="ack_success")
 
 # ---------------------------------------------------------------------------------------------
 # HYPOTHESES — Phase 1 of references/cr-v/IMPLEMENTATION_PLAN.md: complete the L4 identity auth.
