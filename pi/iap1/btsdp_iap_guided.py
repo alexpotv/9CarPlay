@@ -462,12 +462,12 @@ class Hypothesis:
 _FULL_INIT = dict(cert_section_mode="ack_transid", auth_transid=True,
                   auth_trigger="after_fidtokens", force_idps_success=True, autoack_unknown=True,
                   ei_nowplaying_returns=True,
-                  # ROUND 50 (logdump/3 RE): the HU logs `iPodAck(General) NG ack_result[5]
-                  # command_id[11]` — that's our own status-0x05 ("unknown ID") reply to command 0x11.
-                  # Stop NG'ing it (status 0x00). Paired with the RetFIDTokenValueACKs (0x3A) byte-order
-                  # fix in iap1_daemon.build_ret_fid_token_value_acks; together these target the two
-                  # iACS IDPS errors that leave Max_Packet_Size[0] and time out the app session.
-                  opt11_mode="ack_success")
+                  # command 0x11 = the transport max-payload negotiation. ROUND 50 fixed the NG status
+                  # (0x05 -> reply); ROUND 52 (logdump/5) upgrades that to a TYPED
+                  # RetTransportMaxPayloadSize (cmd 0x12) carrying an actual size, because a plain ACK
+                  # left the last iACS error `iAS_Get_Max_Packet_Size Max_Packet_Size[0]`. Paired with the
+                  # RetFIDTokenValueACKs (0x3A) byte-order fix in iap1_daemon.build_ret_fid_token_value_acks.
+                  opt11_mode="ret_max_payload")
 
 # ---------------------------------------------------------------------------------------------
 # HYPOTHESES — Phase 1 of references/cr-v/IMPLEMENTATION_PLAN.md: complete the L4 identity auth.
@@ -576,6 +576,11 @@ STALL_SILENCE_S = 6.0     # post-auth: how long the head unit must go silent bef
 # DataParts kick a couple seconds later (after the launch is processed), both comfortably inside 15s.
 EI_ANNOUNCE_DELAY_S = 0.5   # OpenDataSessionForProtocol announce, after EI mode begins
 EI_DP_KICK_DELAY_S = 2.5    # DataParts SessionStart+AuthRequest kick, after the announce/launch
+
+# ROUND 52 (logdump/5): the transport max-payload size we report to the head unit in the typed
+# RetTransportMaxPayloadSize (cmd 0x12) reply to command 0x11. 0x0200 = 512, matching the value the HU
+# carries in its own Identify/AccessoryCaps tokens. Tune here if the HU log still shows Max_Packet_Size[0].
+MAX_PAYLOAD_SIZE = 0x0200
 
 CMD_ENTER_EI = 0x05       # General Lingo EnterExtendedInterfaceMode
 
@@ -1226,7 +1231,17 @@ def respond_to_packet(harness, hyp, lingo, cmd, payload):
     if cmd == iap.CMD_UNKNOWN_0X11:
         # The head unit's iPod-options request (firmware receives "RetiPodOutOption" in reply). How
         # we answer is the primary round-2 variable — see Hypothesis.opt11_mode.
-        if hyp.opt11_mode == "ack_success":
+        if hyp.opt11_mode == "ret_max_payload":
+            # ROUND 52 (logdump/5 RE): command 0x11 is the transport max-payload negotiation. After the
+            # 0x3A + 0x11-status fixes, the ONLY iACS error left is `iAS_Get_Max_Packet_Size
+            # Max_Packet_Size[0]` — because a plain ACK to 0x11 carries no size. Reply with a typed
+            # RetTransportMaxPayloadSize (cmd 0x12): echo the request transID + a 2-byte big-endian
+            # max payload size. 0x0200 (512) matches the value in the HU's own Identify/AccessoryCaps
+            # tokens. If the HU log then shows a non-zero Max_Packet_Size, this is the last IDPS gap.
+            trans_id = payload[:2] if len(payload) >= 2 else b"\x00\x00"
+            out.append(iap.build_packet(iap.LINGO_GENERAL, 0x12,
+                                        trans_id + struct.pack(">H", MAX_PAYLOAD_SIZE)))
+        elif hyp.opt11_mode == "ack_success":
             out.append(iap.build_ack(0x00, iap.CMD_UNKNOWN_0X11))
         elif hyp.opt11_mode == "ret_options":
             # Speculative RetiPodOptions: cmd 0x12 (guessed Get/Ret pairing), echo the request's
