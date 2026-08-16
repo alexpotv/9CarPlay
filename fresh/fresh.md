@@ -2,7 +2,7 @@ sudo apt-get update
 sudo apt-get install git
 git clone https://github.com/alexpotv/9CarPlay.git
 
-sudo apt install -y bluez bluez-tools python3-dbus python3-gi ffmpeg
+sudo apt install -y bluez bluez-tools python3-dbus python3-gi ffmpeg dosfstools
 
 sudo systemctl enable --now bluetooth
 sudo rfkill unblock bluetooth 
