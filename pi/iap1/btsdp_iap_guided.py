@@ -219,7 +219,7 @@ class Hypothesis:
                  ea_open_session=False, ea_open_protocols=("hondalink",),
                  ea_open_trigger="device_info", ea_open_delay=2.0,
                  dataparts_session=False, dp_ipod_transfer_cmd=0x41,
-                 dp_opcode_sweep=(), dp_auto_b2=True,
+                 dp_opcode_sweep=(), dp_auto_b2=True, dp_kick_on_ei=False,
                  av_spp_handshake=False, av_spp_channels=("av1", "av2"),
                  av_dial_mode="outbound", av_dial_delay=None, av_spp_bind_local=False):
         self.key = key
@@ -316,6 +316,14 @@ class Hypothesis:
         # (nonce taken from 0xB1 if present). Even a rejected 0xB2 is informative (0xB3 vs re-0xB1 vs
         # teardown); the 0xB1 capture is logged regardless.
         self.dp_auto_b2 = dp_auto_b2
+        # dp_kick_on_ei: ROUND 49 (logdump/2). HU logs proved the head unit DOES launch the app
+        # (RequestApplicationLaunch com.honda.hondalink.connect) right after our OpenDataSession announce,
+        # then waits ~15s (Exception.log @iAS_Auth_Timeout_usrf SetTimeout=15000) for the app to drive the
+        # DataParts auth before revoking (SetAuthStatus 2->0, OnIOsMFiUnauthStatus, showTelopNotLaunch).
+        # With this set, _on_ei_mode fires the announce + DataParts kick EARLY on EI entry (not ~20s in on
+        # the device_info request) so the whole handshake lands well inside that 15s window. The inline
+        # device_info path stays as a harmless fallback (take_ea_open/take_dp_kick are one-shot guarded).
+        self.dp_kick_on_ei = dp_kick_on_ei
         # av_spp_handshake: STEP C, corrected transport (ROUND 36). hondalink/3 proved the DataParts
         # app handshake does NOT ride the iAP EA session — the head unit ignored every iPodDataTransfer
         # opcode there. Instead the head unit ACCEPTED our av1/av2 SPP dials, then DISC'd ~1.2s later
@@ -474,25 +482,32 @@ HYPOTHESES = [
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
         **_FULL_INIT),
     Hypothesis(
-        "A2_EA_SWEEP", "PHASE 1: elicit 0xB1 over the iAP EA session — sweep opcodes (corrected framing)",
-        "THE priority test. Drive the app identity-auth on the iAP EA session (iPodDataTransfer), the "
-        "bearer HNiAPAuth::OnRecvDataFromIAppEvent actually reads (IApp = ADCL_iAP_AplReceiveAppData). "
-        "Send Session Start (00/[01 01]) + Auth Request (00/[00]) as length-framed DataParts, swept over "
-        "candidate opcodes 0x41/0x42/0x40/0x43 in one connection (the opcode was never validly tested — "
-        "DP1/DP2 used the old broken checkByte framing). On an inbound 0xB1 (any bearer) we answer with a "
-        "full six-field 0xB2.",
-        "PRIMARY WIN: a DataParts 0xB1 StartAuth is captured ([dataparts RX ... 0xB1]) — the auth engaging "
-        "on the iAP EA bearer for the first time, with its nonce. The btmon shows which opcode preceded it. "
-        "No 0xB1 => the auth is not initiated by our frames on this bearer -> Phase 1b RE.",
+        "A2_EA_SWEEP", "PHASE 2: drive the DataParts auth in the 15s post-launch window — sweep opcodes",
+        "THE priority test. ROUND 49 (logdump/2) proved the head unit DOES launch the app "
+        "(RequestApplicationLaunch com.honda.hondalink.connect) after our announce, then waits ~15s for "
+        "the app to drive the DataParts auth before revoking. Drive it on the iAP EA session "
+        "(iPodDataTransfer), the bearer HNiAPAuth::OnRecvDataFromIAppEvent reads (IApp = "
+        "ADCL_iAP_AplReceiveAppData): announce + Session Start (00/[01 01]) + Auth Request (00/[00]) as "
+        "length-framed DataParts, fired EARLY on EI entry (dp_kick_on_ei) to land inside the 15s window, "
+        "swept over candidate opcodes 0x41/0x42/0x40/0x43. On an inbound 0xB1 we answer a full six-field "
+        "0xB2.",
+        "PRIMARY WIN (read the HU log, Serial Debug=True): SetAuthStatus stays at 2 (NOT [2->0]), NO "
+        "IACS_FSM_check_timeout / OnIOsMFiUnauthStatus, and/or a DataParts 0xB1/0xB3 or CommBase/AppMode "
+        "auth line appears — the auth advancing past the post-launch timeout for the first time. The btmon "
+        "shows which opcode the HU consumed. Still timing out => wrong opcode/bearer -> try A3_SPP_AUTH.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        dataparts_session=True, dp_opcode_sweep=(0x41, 0x42, 0x40, 0x43), dp_auto_b2=True, **_FULL_INIT),
+        dataparts_session=True, dp_opcode_sweep=(0x41, 0x42, 0x40, 0x43), dp_auto_b2=True,
+        dp_kick_on_ei=True, **_FULL_INIT),
     Hypothesis(
-        "A1_EA_AUTH", "PHASE 1: elicit 0xB1 over the iAP EA session — opcode 0x41 (corrected framing)",
+        "A1_EA_AUTH", "PHASE 2: drive the DataParts auth in the 15s window — opcode 0x41",
         "Same as A2_EA_SWEEP but pinned to iPodDataTransfer opcode 0x41 (the iAP1 standard app-data "
-        "opcode). Run after A2 has identified the working opcode, or to isolate 0x41 specifically.",
-        "A 0xB1 StartAuth arrives on the iAP channel; then we answer 0xB2 and watch for 0xB3.",
+        "opcode). Run after A2 has identified the working opcode, or to isolate 0x41 specifically. Also "
+        "fires the kick early on EI entry (dp_kick_on_ei) to stay inside the 15s post-launch window.",
+        "HU log shows the auth held past launch (SetAuthStatus stays 2, no IACS_FSM_check_timeout); a "
+        "0xB1 arrives, we answer 0xB2, watch for 0xB3.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
-        dataparts_session=True, dp_ipod_transfer_cmd=0x41, dp_auto_b2=True, **_FULL_INIT),
+        dataparts_session=True, dp_ipod_transfer_cmd=0x41, dp_auto_b2=True,
+        dp_kick_on_ei=True, **_FULL_INIT),
     Hypothesis(
         "A3_SPP_AUTH", "PHASE 1: comparison — drive the auth over av1/av2 SPP (full six-field 0xB2)",
         "Comparison bearer. Same handshake but over the av1/av2 SPP channels (DP5 got head-unit responses "
@@ -543,6 +558,12 @@ _PHASE_DESC["dataparts_b3"] = "*** received DataParts 0xB3 AuthFin — AppMode a
 STALL_AWAIT_AV_S = 12.0   # after EI mode, how long we wait for the head unit to dial av1/av2
 STALL_SILENCE_S = 6.0     # post-auth: how long the head unit must go silent before we name the
                           # command it's stuck on (its retry unit is ~6s; normal gaps are sub-second)
+
+# dp_kick_on_ei timing (ROUND 49, logdump/2). The head unit's post-launch iAS_Auth window is ~15s;
+# fire the announce shortly after EI entry (registers the app -> RequestApplicationLaunch), then the
+# DataParts kick a couple seconds later (after the launch is processed), both comfortably inside 15s.
+EI_ANNOUNCE_DELAY_S = 0.5   # OpenDataSessionForProtocol announce, after EI mode begins
+EI_DP_KICK_DELAY_S = 2.5    # DataParts SessionStart+AuthRequest kick, after the announce/launch
 
 CMD_ENTER_EI = 0x05       # General Lingo EnterExtendedInterfaceMode
 
@@ -1308,12 +1329,20 @@ def _track_rx_phase(harness, lingo, cmd, payload):
 
 
 def _on_ei_mode(harness):
-    """First entry into Extended-Interface mode: arm the av-dial watchdog and, for a hypothesis using
-    the 'ei_mode' EA trigger, schedule the OpenDataSessionForProtocol announce."""
+    """First entry into Extended-Interface mode: arm the av-dial watchdog and schedule the app
+    announce / DataParts auth kick per the armed hypothesis.
+
+    ROUND 49 (logdump/2): the head unit launches the app after our OpenDataSession announce, then
+    waits ~15s (iAS_Auth_Timeout) for the app to drive the DataParts auth before it revokes and shows
+    'app not launched'. `dp_kick_on_ei` fires the announce + kick EARLY here (on EI entry) so the whole
+    handshake lands inside that window, rather than ~20s in on the device_info request."""
     threading.Timer(STALL_AWAIT_AV_S, _av_dial_watchdog,
                     args=(harness, harness.window_id)).start()
     hyp = harness.current
-    if hyp.ea_open_session and hyp.ea_open_trigger == "ei_mode":
+    if getattr(hyp, "dp_kick_on_ei", False):
+        threading.Timer(EI_ANNOUNCE_DELAY_S, send_ea_open, args=(harness, hyp)).start()
+        threading.Timer(EI_DP_KICK_DELAY_S, send_dp_kick, args=(harness, hyp)).start()
+    elif hyp.ea_open_session and hyp.ea_open_trigger == "ei_mode":
         threading.Timer(hyp.ea_open_delay, send_ea_open, args=(harness, hyp)).start()
 
 
@@ -1712,6 +1741,36 @@ def send_ea_open(harness, hyp):
             return
         harness.log("tx", raw=pkt.hex(), note=f"ea_open under {hyp.key}")
         print(f"  [tx  ] {pkt.hex()}  (OpenDataSessionForProtocol)")
+
+
+def send_dp_kick(harness, hyp):
+    """Drive the HNiAPAuth DataParts auth (SessionStart + AuthRequest) over the live iAP EA session,
+    fired early on EI entry by the dp_kick_on_ei timer to beat the head unit's ~15s iAS_Auth window
+    (ROUND 49, logdump/2). The announce (send_ea_open) must have run first — it assigns ea_session_id,
+    which take_dp_kick_packets needs. One-shot via take_dp_kick_packets' guard."""
+    if harness.ea_session_id is None:
+        harness.log("note", event="dp_kick_no_session",
+                    note="ea_session_id still None at kick time — announce may not have completed")
+        print("  [dp] no EA session id yet — OpenDataSession announce hasn't completed; kick skipped")
+        return
+    pkts = harness.take_dp_kick_packets(hyp)
+    sock = harness.iap_sock
+    if not pkts or sock is None:
+        return
+    for pkt in pkts:
+        try:
+            sock.send(pkt)
+        except OSError as e:
+            harness.log("note", event="dp_kick_send_failed", error=str(e))
+            return
+        harness.log("tx", raw=pkt.hex(), note=f"dp_kick under {hyp.key}")
+        print(f"  [tx  ] {pkt.hex()}  (DataParts kick)")
+    print("  [dp] >>> DataParts kick sent inside the head unit's 15s iAS_Auth window.")
+    print("  [dp]     SUCCESS CHECK — dump the HU log (Serial Debug=True) and grep for:")
+    print("  [dp]       RequestApplicationLaunch          (gate opened — expected)")
+    print("  [dp]       SetAuthStatus [.->2] with NO later [2->0]   (auth HELD, not revoked)")
+    print("  [dp]       absence of IACS_FSM_check_timeout / OnIOsMFiUnauthStatus  (no timeout)")
+    print("  [dp]       any 0xB1 / 0xB2 / 0xB3 DataParts or CommBase/AppMode auth lines")
 
 
 def connect_head_unit_av(harness):
