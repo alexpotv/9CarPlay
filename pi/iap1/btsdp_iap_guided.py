@@ -503,7 +503,13 @@ HYPOTHESES = [
         "shows which opcode the HU consumed. Still timing out => wrong opcode/bearer -> try A3_SPP_AUTH.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
         dataparts_session=True, dp_opcode_sweep=(0x41, 0x42, 0x40, 0x43), dp_auto_b2=True,
-        dp_kick_on_ei=True, **_FULL_INIT),
+        # dp_kick_on_ei DISABLED (ROUND 51, logdump/4): with the IDPS fix, EI setup now runs at ~1-2s;
+        # firing the announce early (EI+0.5s) lands mid-EI-setup and disrupts the HU (it stalls at EI
+        # cmd 0x2c and restarts the whole connection ~28s later). The device_info trigger fires the
+        # announce AFTER the EI-setup burst (its natural app-launch-stage signal) — and since the 15s
+        # iAS_Auth window starts at RequestApplicationLaunch (which follows the announce), the kick is
+        # already inside the window. So we no longer need the early fire.
+        **_FULL_INIT),
     Hypothesis(
         "A1_EA_AUTH", "PHASE 2: drive the DataParts auth in the 15s window — opcode 0x41",
         "Same as A2_EA_SWEEP but pinned to iPodDataTransfer opcode 0x41 (the iAP1 standard app-data "
@@ -513,7 +519,7 @@ HYPOTHESES = [
         "0xB1 arrives, we answer 0xB2, watch for 0xB3.",
         ea_open_session=True, ea_open_protocols=("hondalink",), ea_open_trigger="device_info",
         dataparts_session=True, dp_ipod_transfer_cmd=0x41, dp_auto_b2=True,
-        dp_kick_on_ei=True, **_FULL_INIT),
+        **_FULL_INIT),   # dp_kick_on_ei DISABLED (ROUND 51) — see A2_EA_SWEEP note
     Hypothesis(
         "A3_SPP_AUTH", "PHASE 1: comparison — drive the auth over av1/av2 SPP (full six-field 0xB2)",
         "Comparison bearer. Same handshake but over the av1/av2 SPP channels (DP5 got head-unit responses "
