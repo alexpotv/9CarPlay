@@ -33,9 +33,14 @@ else
 fi
 
 echo "== 2. build the kernel module against the running kernel =="
-# The gadget/ dir builds an out-of-tree module. If the build differs on your kernel, follow the
-# repo README; the key artifacts are the composite gadget (audio + iAP HID) exposing /dev/iap0.
-make -C "$SRC/gadget" KDIR="/lib/modules/$(uname -r)/build"
+# Invoke kbuild DIRECTLY with M pointing at the source dir. Do NOT use ipod-gadget's own
+# `make` wrapper: its `all:` target builds with `M=$(PWD)`, and $(PWD) is an inherited env var
+# that a plain `make -C "$SRC/gadget"` does NOT update (-C changes make's cwd but not $PWD), so
+# kbuild ends up with M pointing at wherever you launched the script from and fails with
+# "Makefile: No such file or directory". Setting M ourselves sidesteps that entirely — kbuild
+# reads $SRC/gadget/Makefile (its obj-m lines) as the module Makefile.
+KDIR="/lib/modules/$(uname -r)/build"
+make -C "$KDIR" M="$SRC/gadget" modules
 
 echo "== 3. load it =="
 # NOTE: confirm the exact module name / whether it auto-binds a UDC or needs configfs from the
