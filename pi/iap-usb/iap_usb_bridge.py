@@ -31,6 +31,18 @@ import os
 import struct
 import sys
 
+# Line-buffer stdout so logs appear immediately even when piped to tee (a pipe is block-buffered by
+# default — that can make a still-running bridge look silent). Diagnostic runs depend on this.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
+# Raw-wire logging: with RAW_LOG on, every read()/write() of /dev/iap0 is dumped as hex BEFORE any
+# framing/parse, so a run reveals exactly what the head unit sends (and whether it sends anything) —
+# independent of whether our reassembler/parser accepts it. Set IAP_RAW_LOG=0 to quiet it.
+RAW_LOG = os.environ.get("IAP_RAW_LOG", "1") != "0"
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "iap1"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "appmode"))
 import hid_framing
@@ -107,6 +119,8 @@ class IapUsbBridge:
 
     def send_packet(self, pkt: bytes, note=""):
         for report in to_hid_tx(pkt):
+            if RAW_LOG:
+                print(f"[raw-tx] {report.hex()}")
             os.write(self.fd, report)
         print(f"[tx  ] {pkt.hex()}  {note}")
 
@@ -115,9 +129,18 @@ class IapUsbBridge:
             report = os.read(self.fd, 128)
             if not report:
                 continue
+            if RAW_LOG:
+                print(f"[raw-rx] {report.hex()}")
+            # Primary path: Apple LinkControl reassembly ([ReportID][LinkControl][payload]).
             frame = self.reasm.push(report)
-            if frame is not None:
-                self._on_frame(frame)
+            if frame is not None and self._on_frame(frame, "reasm"):
+                continue
+            # Fallback: the head unit may deliver via SET_REPORT, where the report-ID is in wValue
+            # (not the data), so the report is [LinkControl][payload] — off by one for the reassembler.
+            # IDPS/handshake packets are single-report, so scan the RAW bytes for the iAP 0x55 sync
+            # and parse directly. This makes the bridge robust to the exact report/link framing while
+            # we confirm it from the raw logs. (Multi-report packets still need the reassembler.)
+            self._on_frame(report, "raw55")
 
     def _mark(self, phase):
         if phase not in self.phases:
@@ -125,14 +148,15 @@ class IapUsbBridge:
             print(f"  [PHASE] {phase}")
 
     # --- iAP1 packet layer -----------------------------------------------------------------------
-    def _on_frame(self, frame: bytes):
+    def _on_frame(self, frame: bytes, src="reasm") -> bool:
         pkt = self._trim_iap(frame)
         if pkt is None:
-            return
+            return False
         lingo, cmd, payload = pkt
-        print(f"[rx  ] lingo=0x{lingo:02x} cmd=0x{cmd:02x} payload={payload.hex()}")
+        print(f"[rx :{src}] lingo=0x{lingo:02x} cmd=0x{cmd:02x} payload={payload.hex()}")
         for reply in self.respond(lingo, cmd, payload):
             self.send_packet(reply)
+        return True
 
     @staticmethod
     def _trim_iap(frame: bytes):
