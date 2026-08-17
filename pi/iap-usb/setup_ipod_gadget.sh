@@ -43,18 +43,32 @@ KDIR="/lib/modules/$(uname -r)/build"
 make -C "$KDIR" M="$SRC/gadget" modules
 
 echo "== 3. load it =="
-# NOTE: confirm the exact module name / whether it auto-binds a UDC or needs configfs from the
-# repo README. Common path: insmod the built .ko, then bind the UDC if not automatic.
-MOD="$(ls "$SRC"/gadget/*.ko 2>/dev/null | head -n1 || true)"
-if [[ -z "$MOD" ]]; then echo "no .ko built under $SRC/gadget — check the build" >&2; exit 1; fi
-insmod "$MOD" || echo "insmod failed (already loaded? check dmesg)"
+# Per the ipod-gadget README the THREE modules load in a fixed order, and libcomposite MUST be
+# loaded first (otherwise g_ipod_audio fails with "Unknown symbol"). g_ipod_audio + g_ipod_hid
+# provide the USB functions; g_ipod_gadget is the composite that binds them and auto-binds the UDC.
+# PRODUCT_ID is the U1-hypothesis knob (Apple PID the HU registry expects) — no rebuild needed;
+# see doc/apple-usb.ids in the repo for valid values. SWAP_CONFIGS=1 is worth trying if the HU
+# only ever recognizes Mass Storage (per the README note).
+PRODUCT_ID="${IPOD_PRODUCT_ID:-0x1297}"
+SWAP_CONFIGS="${IPOD_SWAP_CONFIGS:-0}"
 
-echo "== 4. bind the UDC (if the module didn't auto-bind) =="
+# Clean any prior load so re-runs are idempotent (reverse dependency order).
+rmmod g_ipod_gadget g_ipod_hid g_ipod_audio 2>/dev/null || true
+
+modprobe libcomposite
+insmod "$SRC/gadget/g_ipod_audio.ko"
+insmod "$SRC/gadget/g_ipod_hid.ko"
+insmod "$SRC/gadget/g_ipod_gadget.ko" product_id="$PRODUCT_ID" swap_configs="$SWAP_CONFIGS" \
+    || { echo "g_ipod_gadget insmod failed — check: dmesg | tail -40" >&2; exit 1; }
+
+echo "  loaded with product_id=$PRODUCT_ID swap_configs=$SWAP_CONFIGS"
+
+echo "== 4. verify =="
 UDC="$(ls /sys/class/udc 2>/dev/null | head -n1 || true)"
 echo "  available UDC: ${UDC:-<none - check dwc2 peripheral mode>}"
-# If the module creates a configfs gadget, bind with:
-#   echo "$UDC" | sudo tee /sys/kernel/config/usb_gadget/<name>/UDC
-# (mirror the | sudo tee pattern from pi/msd-gadget — a bare 'sudo echo >' fails on sysfs.)
+# g_ipod_gadget is a legacy-style gadget driver: it auto-binds the first free UDC on insmod,
+# so there is normally NO configfs step. Confirm binding with:  cat /sys/class/udc/*/state
+[[ -e /dev/iap0 ]] && echo "  /dev/iap0 present" || echo "  /dev/iap0 MISSING — check dmesg"
 
 echo
 echo "Expect /dev/iap0 to appear. Then run the bridge:"
