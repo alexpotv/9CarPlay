@@ -45,7 +45,14 @@ try:
 except Exception:        # pragma: no cover
     appmode = None
 
-IAP0 = "/dev/iap0"
+# The HID char device carrying raw iAP reports. Two bearers expose the same raw-report semantics:
+#   - ipod-gadget kernel module        -> /dev/iap0   (legacy driver; binds deactivated — enum issues)
+#   - configfs f_hid (setup_hid_gadget.sh) -> /dev/hidg0  (connects at bind; reaches 'configured')
+# Override with env IAP_USB_DEV. Default prefers /dev/hidg0 (the configfs bearer) when present.
+IAP0 = os.environ.get(
+    "IAP_USB_DEV",
+    "/dev/hidg0" if os.path.exists("/dev/hidg0") else "/dev/iap0",
+)
 
 # ---- locked baseline config (was Hypothesis kwargs; see IAP_OVER_USB.md §Appendix) --------------
 MAX_PAYLOAD_SIZE = 0x0200                 # command 0x11 -> RetTransportMaxPayloadSize (512)

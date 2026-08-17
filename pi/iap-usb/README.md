@@ -46,23 +46,43 @@ path — only the bearer changes. All the fixes from the BT saga (0x3A ACK order
 - HID report on the wire: `[ReportID][LinkControl][payload…]` zero-padded to the report's fixed
   length. The HID layer carries no exact length — the iAP1 `0x55 <len>` field trims the padding.
 
-## Dependency: the ipod-gadget kernel module
+## Two bearers (both expose raw HID reports; the bridge runs on either)
 
-The USB-device HID layer is `oandrew/ipod-gadget` (a kernel module), not configfs `f_hid` — it
-handles the Apple quirks (custom report-descriptor GET_DESCRIPTOR, vendor request 0x40, SET_REPORT
-host→device with no OUT endpoint). It must be **built against the Pi's running kernel** (needs kernel
-headers). `setup_ipod_gadget.sh` clones + builds + loads it; `/dev/iap0` then read/writes raw HID
-reports (report-ID byte included).
+The kernel-side USB HID device can be provided two ways. Both hand userspace **raw HID report bytes**
+(verified against the ipod-gadget source), so `hid_framing.py` + `iap_usb_bridge.py` run unchanged —
+the bridge auto-targets `/dev/hidg0`, else `/dev/iap0`, override with `IAP_USB_DEV`.
 
-## Bring-up procedure
+**1. configfs `f_hid` — `setup_hid_gadget.sh` — PRIMARY.** A configfs gadget carrying the exact
+iPod HID report descriptor (byte-identical to ipod-gadget's `ipod.h`), exposing `/dev/hidg0`. The
+decisive advantage: **configfs connects at _bind_** — the USB pull-up asserts the instant you write
+the UDC, so the car enumerates it to `configured`. This is the proven-working enumeration mechanism
+on this car (both MSD and the earlier `pi/iap1/` `iap1_0` gadget reached `configured` this way).
+Host→device is `SET_REPORT`-only via `no_out_endpoint=1` (kernel ≥ 5.19; the Pi's 6.18 has it).
+**Limitation:** f_hid does not ACK the Apple vendor request `0x40`. Enumeration doesn't need it, so
+this clears the `not attached` blocker regardless; if the HU stalls on a post-config `0x40` handshake,
+fall back to bearer 2.
+
+**2. `oandrew/ipod-gadget` kernel module — `setup_ipod_gadget.sh` — FALLBACK.** Handles every Apple
+quirk including the vendor `0x40` request. But it's a legacy driver that binds **deactivated** and
+only asserts the pull-up when `/dev/iap0` is opened — and on this Pi's dwc2 that activate path does
+**not** drive the pull-up, so it stays stuck at `not attached`. Kept as the fallback for the `0x40`
+case; if we need it, the fix is to patch out its `usb_function_deactivate()` so it connects at bind
+like a normal gadget. Must be **built against the Pi's running kernel** (needs kernel headers).
+
+## Bring-up procedure (configfs f_hid — primary)
 
 1. Keep the BT connection running (the locked baseline — HFP + switch trigger). See
    `IAP_OVER_USB.md §Appendix`.
-2. `sudo ./setup_ipod_gadget.sh` → `/dev/iap0` appears; bind the UDC.
-3. `sudo python3 iap_usb_bridge.py`.
-4. On the head unit, start HondaLink AppMode. Dump the HU log (`../msd-gadget/read_logs.sh`) and look
-   for `GetConnectType iAP over USB` + `SwitchConnect` **success** (no `SwitchConnect Failed` /
-   `iAPoverBTConnectError`), and `SetAuthStatus` holding at 2 past the 15 s window.
+2. `sudo ./setup_hid_gadget.sh` → binds the UDC (connects at bind), `/dev/hidg0` appears. Confirm
+   `cat /sys/class/udc/*/state` reaches `configured` (the car enumerated it).
+3. `sudo python3 iap_usb_bridge.py` (auto-targets `/dev/hidg0`).
+4. On the head unit, start HondaLink AppMode. Tear the gadget down, bring up the MSD gadget, dump the
+   HU log (`../msd-gadget/read_logs.sh`) and look for `OnDeviceChangeEvent`, `GetConnectType iAP over
+   USB` + `SwitchConnect` **success** (no `SwitchConnect Failed` / `iAPoverBTConnectError`), and
+   `SetAuthStatus` holding at 2 past the 15 s window.
+
+If the HU stalls on a vendor `0x40` request after config, switch to the ipod-gadget fallback
+(`setup_ipod_gadget.sh`, patched to connect at bind).
 
 ## Open questions (resolve empirically during bring-up)
 
