@@ -32,6 +32,42 @@ else
     git -C "$SRC" pull --ff-only || true
 fi
 
+echo "== 1b. patch ipod_hid.c to CONNECT AT BIND =="
+# WHY: ipod-gadget binds the HID function DEACTIVATED (usb_function_deactivate in ipod_hid_bind)
+# and only asserts the USB pull-up when /dev/iap0 is opened (usb_function_activate). On the Pi's
+# dwc2 that activate path does NOT drive the pull-up, so the gadget stays 'not attached' and the
+# head unit never enumerates it. We PROVED (references/usb/10) that the HU enumerates a bind-time-
+# connecting gadget fine (configfs f_hid reached 'configured' and the HU's USBEHID iPod driver
+# attached). But f_hid can't ACK the Apple vendor request 0x40, so the HU never sent us any iAP
+# (USBEHID:iPod_ReadThread ran but no SET_REPORT arrived). ipod-gadget DOES ACK 0x40 — so we keep
+# ipod-gadget but make it connect at bind by neutralizing the deactivate/activate machinery. The
+# device then stays connected whenever the gadget is bound, regardless of /dev/iap0 open state.
+IPOD_HID="$SRC/gadget/ipod_hid.c"
+python3 - "$IPOD_HID" <<'PY'
+import sys
+p = sys.argv[1]
+src = open(p).read()
+if "9CarPlay: connect at bind" in src:
+    print("  ipod_hid.c already patched (connect-at-bind)")
+else:
+    lines = src.splitlines(keepends=True)
+    last_inc = 0
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith("#include"):
+            last_inc = i
+    patch = (
+        "\n/* 9CarPlay: connect at bind — neutralize ipod-gadget's deactivate-until-/dev/iap0-open.\n"
+        "   That activate path never asserts the dwc2 pull-up on the Pi (device stays 'not attached');\n"
+        "   the HU enumerates a bind-time-connected gadget fine (proven with configfs f_hid, refs/usb/10).\n"
+        "   No-op'ing both keeps the function connected whenever bound. See references/cr-v/IAP_OVER_USB.md. */\n"
+        "#define usb_function_deactivate(f) (0)\n"
+        "#define usb_function_activate(f)   (0)\n"
+    )
+    lines.insert(last_inc + 1, patch)
+    open(p, "w").write("".join(lines))
+    print("  patched ipod_hid.c: connect-at-bind (deactivate/activate no-op'd)")
+PY
+
 echo "== 2. build the kernel module against the running kernel =="
 # Invoke kbuild DIRECTLY with M pointing at the source dir. Do NOT use ipod-gadget's own
 # `make` wrapper: its `all:` target builds with `M=$(PWD)`, and $(PWD) is an inherited env var
