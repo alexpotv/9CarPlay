@@ -30,6 +30,14 @@ enumeration + the empirical unknowns in README.md.
 import os
 import struct
 import sys
+import time
+
+_T0 = time.monotonic()
+
+
+def _ts() -> str:
+    """Milliseconds since bridge start — correlate with the head-unit log's ms timestamps."""
+    return f"{(time.monotonic() - _T0) * 1000:8.0f}"
 
 # Line-buffer stdout so logs appear immediately even when piped to tee (a pipe is block-buffered by
 # default — that can make a still-running bridge look silent). Diagnostic runs depend on this.
@@ -141,15 +149,21 @@ class IapUsbBridge:
     def opener_loop(self, period_s=1.5, rounds=8):
         """Prompt the receive-first head unit. IAP_USB_OPENER selects a single opener; the default
         'auto' CYCLES through all candidates each round, so one connection tests them all — stopping
-        the instant the head unit replies (got_rx). 'none' disables."""
-        import time
+        the instant the head unit replies (got_rx). 'none' disables.
+
+        usb/14 lesson: ipod-gadget's write BLOCKS until the host collects the IN report, and the HU
+        never collected it (its IntIn read errored er[-5] instantly). A blocking write therefore froze
+        this loop after the FIRST opener — we never tried the others and got no completion signal. So
+        each opener is now sent on its OWN throwaway thread (_threaded_send): a stuck write can't stall
+        the cadence, every candidate is actually attempted, and the [tx-done] line tells us whether ANY
+        write ever completes (= whether the HU ever issues IN tokens that drain our endpoint at all)."""
         if iap is None:
             print("[opener] disabled (iap1_daemon unavailable)"); return
         sel = os.environ.get("IAP_USB_OPENER", "auto").lower()
         if sel == "none":
             print("[opener] disabled by IAP_USB_OPENER=none"); return
         names = ["requestidentify", "identify", "startidps"] if sel == "auto" else [sel]
-        print(f"[opener] receive-first HU kick; cycling {names} every {period_s}s until reply")
+        print(f"[{_ts()}] [opener] receive-first HU kick; cycling {names} every {period_s}s until reply")
         for rnd in range(rounds):
             for which in names:
                 if self.got_rx:
@@ -157,19 +171,36 @@ class IapUsbBridge:
                 pkt = self._build_named_opener(which)
                 if pkt is None:
                     print(f"[opener] unknown opener {which!r}, skipping"); continue
-                try:
-                    self.send_packet(pkt, note=f"OPENER {which} (round {rnd+1})")
-                except OSError as e:
-                    print(f"[opener] write failed: {e}")
+                self._threaded_send(pkt, note=f"OPENER {which} (round {rnd+1})")
                 time.sleep(period_s)
-        print("[opener] gave up (no inbound after all rounds); read loop still running")
+        print(f"[{_ts()}] [opener] finished all rounds; read loop still running")
+
+    def _threaded_send(self, pkt: bytes, note=""):
+        """Fire a packet on a daemon thread so a blocking write can't stall the caller. Logs when the
+        write STARTS and when it actually COMPLETES (host collected the report), each timestamped."""
+        import threading
+
+        def _run():
+            reports = to_hid_tx(pkt)
+            for report in reports:
+                if RAW_LOG:
+                    print(f"[{_ts()}] [raw-tx] {report.hex()}  {note}")
+                try:
+                    os.write(self.fd, report)
+                    print(f"[{_ts()}] [tx-done] {report.hex()}  (HU collected IN report)")
+                except OSError as e:
+                    print(f"[{_ts()}] [tx-err] {e}  {note}")
+                    return
+            print(f"[{_ts()}] [tx  ] {pkt.hex()}  {note}")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def send_packet(self, pkt: bytes, note=""):
         for report in to_hid_tx(pkt):
             if RAW_LOG:
-                print(f"[raw-tx] {report.hex()}")
+                print(f"[{_ts()}] [raw-tx] {report.hex()}")
             os.write(self.fd, report)
-        print(f"[tx  ] {pkt.hex()}  {note}")
+        print(f"[{_ts()}] [tx  ] {pkt.hex()}  {note}")
 
     def read_loop(self):
         while True:
@@ -177,7 +208,7 @@ class IapUsbBridge:
             if not report:
                 continue
             if RAW_LOG:
-                print(f"[raw-rx] {report.hex()}")
+                print(f"[{_ts()}] [raw-rx] {report.hex()}")
             # Primary path: Apple LinkControl reassembly ([ReportID][LinkControl][payload]).
             frame = self.reasm.push(report)
             if frame is not None and self._on_frame(frame, "reasm"):
