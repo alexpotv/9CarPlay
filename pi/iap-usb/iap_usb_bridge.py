@@ -111,11 +111,58 @@ class IapUsbBridge:
         self.dp_kicked = False
         self.dp_b2_sent = False
         self.phases = set()
+        self.got_rx = False        # set on the first inbound frame; stops the opener resend
 
     # --- transport -------------------------------------------------------------------------------
     def open(self):
         self.fd = os.open(self.path, os.O_RDWR)
         print(f"[iap-usb] opened {self.path}")
+
+    # --- proactive opener ------------------------------------------------------------------------
+    # usb/11-12 proved the head unit's USB iAP FSM is RECEIVE-FIRST: it mounts the iPod, then waits
+    # for us to transmit (IACS_iAP_FSM_USB_Recv_ch1 iACS_receive_command NG, then an 18s IDPS timeout),
+    # and never sends a SET_REPORT (bridge got zero [raw-rx]). Over BT the accessory "proactively sends
+    # StartIDPS on its own"; over USB it does not, so the iPod must prompt it. Classic iAP1: the iPod
+    # sends RequestIdentify (0x00) -> the accessory replies IdentifyDeviceLingoes -> handshake proceeds.
+    # Opener is configurable so we can iterate cheaply across candidates; resent until the first inbound.
+    def _build_named_opener(self, which):
+        if which == "requestidentify":
+            return iap.build_packet(iap.LINGO_GENERAL, iap.CMD_REQUEST_IDENTIFY, b"")
+        if which == "identify":       # IdentifyDeviceLingoes 0x13: lingoesSpoken|options|deviceId
+            lingoes = 0
+            for l in (0x00, 0x02, 0x03, 0x04):
+                lingoes |= (1 << l)
+            return iap.build_packet(iap.LINGO_GENERAL, iap.CMD_IDENTIFY_DEVICE_LINGOES,
+                                    struct.pack(">III", lingoes, 0, 0))
+        if which == "startidps":
+            return iap.build_packet(iap.LINGO_GENERAL, iap.CMD_START_IDPS, b"\x00\x00")
+        return None
+
+    def opener_loop(self, period_s=1.5, rounds=8):
+        """Prompt the receive-first head unit. IAP_USB_OPENER selects a single opener; the default
+        'auto' CYCLES through all candidates each round, so one connection tests them all — stopping
+        the instant the head unit replies (got_rx). 'none' disables."""
+        import time
+        if iap is None:
+            print("[opener] disabled (iap1_daemon unavailable)"); return
+        sel = os.environ.get("IAP_USB_OPENER", "auto").lower()
+        if sel == "none":
+            print("[opener] disabled by IAP_USB_OPENER=none"); return
+        names = ["requestidentify", "identify", "startidps"] if sel == "auto" else [sel]
+        print(f"[opener] receive-first HU kick; cycling {names} every {period_s}s until reply")
+        for rnd in range(rounds):
+            for which in names:
+                if self.got_rx:
+                    return
+                pkt = self._build_named_opener(which)
+                if pkt is None:
+                    print(f"[opener] unknown opener {which!r}, skipping"); continue
+                try:
+                    self.send_packet(pkt, note=f"OPENER {which} (round {rnd+1})")
+                except OSError as e:
+                    print(f"[opener] write failed: {e}")
+                time.sleep(period_s)
+        print("[opener] gave up (no inbound after all rounds); read loop still running")
 
     def send_packet(self, pkt: bytes, note=""):
         for report in to_hid_tx(pkt):
@@ -153,6 +200,7 @@ class IapUsbBridge:
         if pkt is None:
             return False
         lingo, cmd, payload = pkt
+        self.got_rx = True          # first inbound: stop the opener resend
         print(f"[rx :{src}] lingo=0x{lingo:02x} cmd=0x{cmd:02x} payload={payload.hex()}")
         for reply in self.respond(lingo, cmd, payload):
             self.send_packet(reply)
@@ -364,8 +412,12 @@ class IapUsbBridge:
 
 
 def main():
+    import threading
     b = IapUsbBridge()
     b.open()
+    # Kick the receive-first head unit with a proactive opener (resent until it replies), in a
+    # background thread so the read loop can catch the reply. See build_opener()/opener_loop().
+    threading.Thread(target=b.opener_loop, daemon=True).start()
     try:
         b.read_loop()
     except KeyboardInterrupt:
