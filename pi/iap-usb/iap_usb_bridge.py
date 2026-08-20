@@ -123,8 +123,26 @@ class IapUsbBridge:
 
     # --- transport -------------------------------------------------------------------------------
     def open(self):
-        self.fd = os.open(self.path, os.O_RDWR)
-        print(f"[iap-usb] opened {self.path}")
+        # O_NONBLOCK is REQUIRED, not an optimization. ipod-gadget's ipod_hid_dev_read/_write share
+        # one mutex (hid->lock), and the BLOCKING read path holds that mutex while waiting for a
+        # SET_REPORT — starving every write, which then never reaches usb_ep_queue (proven by usb/14:
+        # one [raw-tx], no completion, HU IntIn read er[-5] instantly because nothing was queued).
+        # ipod_mutex_lock(&hid->lock, f_flags & O_NONBLOCK) uses TRY-LOCK when O_NONBLOCK is set, so
+        # neither read nor write parks on the mutex; we drive readability with poll() instead.
+        self.fd = os.open(self.path, os.O_RDWR | os.O_NONBLOCK)
+        print(f"[{_ts()}] [iap-usb] opened {self.path} (O_NONBLOCK, poll-driven)")
+
+    def _write_report(self, report: bytes, tries=60, gap_s=0.01) -> bool:
+        """Write one HID report on the non-blocking fd. EAGAIN means the driver mutex was momentarily
+        contended (a read in flight) or write_fifo is full (HU not draining IN); retry briefly, then
+        give up rather than deadlock. Returns True if the report was accepted into write_fifo."""
+        for _ in range(tries):
+            try:
+                os.write(self.fd, report)
+                return True
+            except BlockingIOError:
+                time.sleep(gap_s)
+        return False
 
     # --- proactive opener ------------------------------------------------------------------------
     # usb/11-12 proved the head unit's USB iAP FSM is RECEIVE-FIRST: it mounts the iPod, then waits
@@ -181,15 +199,13 @@ class IapUsbBridge:
         import threading
 
         def _run():
-            reports = to_hid_tx(pkt)
-            for report in reports:
+            for report in to_hid_tx(pkt):
                 if RAW_LOG:
                     print(f"[{_ts()}] [raw-tx] {report.hex()}  {note}")
-                try:
-                    os.write(self.fd, report)
-                    print(f"[{_ts()}] [tx-done] {report.hex()}  (HU collected IN report)")
-                except OSError as e:
-                    print(f"[{_ts()}] [tx-err] {e}  {note}")
+                if self._write_report(report):
+                    print(f"[{_ts()}] [tx-queued] {report.hex()}  (accepted into write_fifo)")
+                else:
+                    print(f"[{_ts()}] [tx-err] EAGAIN x60  {note}  (fifo full / lock contended)")
                     return
             print(f"[{_ts()}] [tx  ] {pkt.hex()}  {note}")
 
@@ -199,12 +215,24 @@ class IapUsbBridge:
         for report in to_hid_tx(pkt):
             if RAW_LOG:
                 print(f"[{_ts()}] [raw-tx] {report.hex()}")
-            os.write(self.fd, report)
+            if not self._write_report(report):
+                print(f"[{_ts()}] [tx-err] EAGAIN x60  {note}")
+                return
         print(f"[{_ts()}] [tx  ] {pkt.hex()}  {note}")
 
     def read_loop(self):
+        import select
+        poller = select.poll()
+        poller.register(self.fd, select.POLLIN)
         while True:
-            report = os.read(self.fd, 128)
+            # poll() waits for readability WITHOUT holding hid->lock, so writes stay unblocked. Only
+            # touch the fd (and thus the driver mutex) when there's actually a report to collect.
+            if not poller.poll(500):
+                continue
+            try:
+                report = os.read(self.fd, 128)
+            except BlockingIOError:
+                continue      # spurious wake / lost the try-lock race; poll again
             if not report:
                 continue
             if RAW_LOG:
